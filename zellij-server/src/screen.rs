@@ -343,6 +343,9 @@ pub struct TabOverrideResult {
 #[derive(Debug, Clone)]
 pub enum ScreenInstruction {
     PtyBytes(u32, VteBytes),
+    /// terminal_id -> name of the AI agent running in its foreground (if any),
+    /// reported periodically by the pty thread
+    UpdateAgentStatuses(HashMap<u32, Option<String>>),
     PluginBytes(Vec<PluginRenderAsset>),
     Render,
     RenderToClients,
@@ -965,6 +968,7 @@ impl From<&ScreenInstruction> for ScreenContext {
     fn from(screen_instruction: &ScreenInstruction) -> Self {
         match *screen_instruction {
             ScreenInstruction::PtyBytes(..) => ScreenContext::HandlePtyBytes,
+            ScreenInstruction::UpdateAgentStatuses(..) => ScreenContext::UpdateAgentStatuses,
             ScreenInstruction::PluginBytes(..) => ScreenContext::PluginBytes,
             ScreenInstruction::Render => ScreenContext::Render,
             ScreenInstruction::RenderToClients => ScreenContext::RenderToClients,
@@ -7876,6 +7880,20 @@ pub(crate) fn screen_thread_main(
                     .bus
                     .senders
                     .send_to_background_jobs(BackgroundJob::RenderToClients);
+            },
+            ScreenInstruction::UpdateAgentStatuses(agents) => {
+                let mut changed = false;
+                for tab in screen.get_tabs_mut().values_mut() {
+                    if tab.update_agent_statuses(&agents) {
+                        changed = true;
+                    }
+                }
+                if changed {
+                    let _ = screen
+                        .bus
+                        .senders
+                        .send_to_background_jobs(BackgroundJob::RenderToClients);
+                }
             },
             ScreenInstruction::PluginBytes(mut plugin_render_assets) => {
                 for plugin_render_asset in plugin_render_assets.iter_mut() {

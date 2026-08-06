@@ -1,3 +1,4 @@
+use crate::agent_detection::{AgentActivity, AgentStatus};
 use crate::output::CharacterChunk;
 use crate::panes::{
     AnsiCode, CharacterStyles, RcCharacterStyles, TerminalCharacter, EMPTY_TERMINAL_CHARACTER,
@@ -113,6 +114,7 @@ pub struct PaneFrame {
     pub other_cursors_exist_in_session: bool,
     pub other_focused_clients: Vec<ClientId>,
     exit_status: Option<ExitStatus>,
+    agent_status: Option<AgentStatus>,
     is_first_run: bool,
     pane_is_stacked_over: bool,
     pane_is_stacked_under: bool,
@@ -151,6 +153,7 @@ impl PaneFrame {
             other_focused_clients: frame_params.other_focused_clients,
             other_cursors_exist_in_session: frame_params.other_cursors_exist_in_session,
             exit_status: None,
+            agent_status: None,
             is_first_run: false,
             pane_is_stacked_over: frame_params.pane_is_stacked_over,
             pane_is_stacked_under: frame_params.pane_is_stacked_under,
@@ -180,6 +183,9 @@ impl PaneFrame {
             Some(exit_status) => Some(ExitStatus::Code(exit_status)),
             None => Some(ExitStatus::Exited),
         };
+    }
+    pub fn set_agent_status(&mut self, agent_status: Option<AgentStatus>) {
+        self.agent_status = agent_status;
     }
     pub fn indicate_first_run(&mut self) {
         self.is_first_run = true;
@@ -468,7 +474,47 @@ impl PaneFrame {
             None
         }
     }
+    /// A colored badge showing the state of the AI agent running in the pane,
+    /// eg. "● claude" (green when working, orange when waiting for input,
+    /// dimmed when idle).
+    fn agent_badge(&self, max_length: usize) -> Option<(Vec<TerminalCharacter>, usize)> {
+        let status = self.agent_status.as_ref()?;
+        let (symbol, label, color) = match status.activity {
+            AgentActivity::Working => ("●", "", Some(self.style.colors.exit_code_success.base)),
+            AgentActivity::Blocked => (
+                "●",
+                " needs input",
+                Some(self.style.colors.text_unselected.emphasis_0),
+            ),
+            AgentActivity::Idle => (
+                "○",
+                " idle",
+                self.style.colors.frame_unselected.map(|frame| frame.base),
+            ),
+        };
+        let text = format!(" {} {}{} ", symbol, status.name, label);
+        let width = text.width();
+        if width <= max_length {
+            Some((foreground_color(&text, color), width))
+        } else {
+            None
+        }
+    }
     fn render_title_left_side(&self, max_length: usize) -> Option<(Vec<TerminalCharacter>, usize)> {
+        let (mut badge, badge_length) = self.agent_badge(max_length).unwrap_or((vec![], 0));
+        let title = self.render_title_text(max_length.saturating_sub(badge_length));
+        if badge_length == 0 {
+            return title;
+        }
+        match title {
+            Some((mut title_part, title_length)) => {
+                badge.append(&mut title_part);
+                Some((badge, badge_length + title_length))
+            },
+            None => Some((badge, badge_length)),
+        }
+    }
+    fn render_title_text(&self, max_length: usize) -> Option<(Vec<TerminalCharacter>, usize)> {
         let middle_truncated_sign = "[..]";
         let middle_truncated_sign_long = "[...]";
         let full_text = format!(" {} ", &self.title);
@@ -889,7 +935,9 @@ impl PaneFrame {
             .is_some()
             .then(|| self.first_exited_held_title_part_full());
         let exit_length = exit_part.as_ref().map(|(_, length)| *length).unwrap_or(0);
-        let content_max_length = max_length.saturating_sub(title_padding + exit_length);
+        let badge_part = self.agent_badge(max_length.saturating_sub(title_padding + exit_length));
+        let badge_length = badge_part.as_ref().map(|(_, length)| *length).unwrap_or(0);
+        let content_max_length = max_length.saturating_sub(title_padding + exit_length + badge_length);
         let content = if self.title.width() <= content_max_length {
             self.title.clone()
         } else {
@@ -905,6 +953,11 @@ impl PaneFrame {
             truncated
         };
         let (mut part, mut length) = self.plain_title_part(&content);
+        if let Some((mut badge, badge_length)) = badge_part {
+            badge.append(&mut part);
+            part = badge;
+            length += badge_length;
+        }
         if let Some((mut exit, exit_length)) = exit_part {
             part.append(&mut exit);
             length += exit_length;
@@ -1487,6 +1540,27 @@ mod tests {
 
     fn characters_to_string(chars: &[TerminalCharacter]) -> String {
         chars.iter().map(|c| c.character).collect()
+    }
+
+    #[test]
+    fn agent_badge_appears_in_title() {
+        let mut frame = pane_frame_with(false, false, 60);
+        frame.title = "my pane".into();
+        frame.set_agent_status(Some(AgentStatus {
+            name: "claude".into(),
+            activity: AgentActivity::Working,
+        }));
+        let (chunks, _) = frame.render().unwrap();
+        let top_row: String = chunks
+            .iter()
+            .filter(|chunk| chunk.y == 0)
+            .flat_map(|chunk| chunk.terminal_characters.iter().map(|tc| tc.character))
+            .collect();
+        assert!(
+            top_row.contains("● claude") && top_row.contains("my pane"),
+            "top row was: {:?}",
+            top_row
+        );
     }
 
     #[test]

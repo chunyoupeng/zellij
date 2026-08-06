@@ -2070,6 +2070,32 @@ impl Pty {
         }
     }
 
+    /// Reports to the screen thread, for every known terminal, the AI agent
+    /// (if any) running in its foreground. Sent every scan tick - also when
+    /// no pane had activity - so that the screen can decay a quiet agent's
+    /// status from Working to Idle/Blocked.
+    fn report_agent_panes(&self) {
+        let agents: HashMap<u32, Option<String>> = self
+            .id_to_child_pid
+            .keys()
+            .map(|terminal_id| {
+                let cmd = self
+                    .terminal_foreground_cmds
+                    .get(terminal_id)
+                    .filter(|cmd| !cmd.is_empty())
+                    .or_else(|| self.terminal_cmds.get(terminal_id));
+                (
+                    *terminal_id,
+                    cmd.and_then(|cmd| crate::agent_detection::agent_name_from_cmd(cmd)),
+                )
+            })
+            .collect();
+        let _ = self
+            .bus
+            .senders
+            .send_to_screen(ScreenInstruction::UpdateAgentStatuses(agents));
+    }
+
     pub fn update_and_report_cwds(&mut self) {
         use std::sync::atomic::Ordering;
 
@@ -2086,6 +2112,7 @@ impl Pty {
             .collect();
 
         if active_terminal_ids.is_empty() {
+            self.report_agent_panes();
             return;
         }
 
@@ -2185,6 +2212,8 @@ impl Pty {
                     .insert(*terminal_id, foreground_cmd);
             }
         }
+
+        self.report_agent_panes();
     }
 
     pub fn reconfigure(

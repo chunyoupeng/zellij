@@ -289,6 +289,12 @@ pub trait Pane {
     fn set_geom_override(&mut self, pane_geom: PaneGeom);
     fn handle_pty_bytes(&mut self, _bytes: VteBytes) {}
     fn handle_plugin_bytes(&mut self, _client_id: ClientId, _bytes: VteBytes) {}
+    /// Updates the AI-agent status badge of this pane given the agent (if
+    /// any) currently running in its foreground, returning whether the
+    /// displayed status changed. Only relevant to terminal panes.
+    fn update_agent_status(&mut self, _foreground_agent: Option<&str>) -> bool {
+        false
+    }
     fn show_cursor(&mut self, _client_id: ClientId, _cursor_position: Option<(usize, usize)>) {}
     /// Returns the cursor position and whether it is visible.
     /// The position is returned unconditionally (as long as the cursor is within
@@ -3836,6 +3842,34 @@ impl Tab {
                 .suppressed_panes
                 .values()
                 .any(|s_p| s_p.1.pid() == PaneId::Terminal(pid))
+    }
+    /// Updates the AI-agent status badge of this tab's terminal panes from a
+    /// map of terminal_id -> foreground agent name, returning whether any
+    /// displayed status changed. Terminal ids belonging to other tabs are
+    /// ignored.
+    pub fn update_agent_statuses(&mut self, agents: &HashMap<u32, Option<String>>) -> bool {
+        let mut changed = false;
+        for (terminal_id, agent_name) in agents {
+            if let Some(pane) = self
+                .tiled_panes
+                .get_pane_mut(PaneId::Terminal(*terminal_id))
+                .or_else(|| {
+                    self.floating_panes
+                        .get_pane_mut(PaneId::Terminal(*terminal_id))
+                })
+                .or_else(|| {
+                    self.suppressed_panes
+                        .values_mut()
+                        .find(|s_p| s_p.1.pid() == PaneId::Terminal(*terminal_id))
+                        .map(|s_p| &mut s_p.1)
+                })
+            {
+                if pane.update_agent_status(agent_name.as_deref()) {
+                    changed = true;
+                }
+            }
+        }
+        changed
     }
     pub fn has_plugin(&self, plugin_id: u32) -> bool {
         self.tiled_panes.panes_contain(&PaneId::Plugin(plugin_id))

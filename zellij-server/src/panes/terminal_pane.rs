@@ -1,3 +1,6 @@
+use crate::agent_detection::{
+    text_indicates_blocked, AgentActivity, AgentStatus, AGENT_WORKING_THRESHOLD,
+};
 use crate::output::{CharacterChunk, KittyImageChunk, SixelImageChunk};
 use crate::panes::kitty_graphics::{
     InterceptorResult, KittyApcInterceptor, KittyHostSupport, KittyImageStore,
@@ -183,6 +186,12 @@ pub struct TerminalPane {
     kitty_interceptor: KittyApcInterceptor,
     /// Vim-like keyboard selection while the client is in Scroll/Search.
     copy_session: Option<CopySession>,
+    /// When this pane last received PTY output, used to derive the activity
+    /// of an AI agent running inside it.
+    last_output_at: Instant,
+    /// The AI agent currently running in this pane's foreground (if any) and
+    /// its activity, displayed as a badge in the pane frame.
+    agent_status: Option<AgentStatus>,
 }
 
 impl Pane for TerminalPane {
@@ -231,8 +240,31 @@ impl Pane for TerminalPane {
         self.geom_override = Some(pane_geom);
         self.reflow_lines();
     }
+    fn update_agent_status(&mut self, foreground_agent: Option<&str>) -> bool {
+        let new_status = foreground_agent.map(|name| {
+            let activity = if self.last_output_at.elapsed() < AGENT_WORKING_THRESHOLD {
+                AgentActivity::Working
+            } else if text_indicates_blocked(&self.grid.dump_screen(false)) {
+                AgentActivity::Blocked
+            } else {
+                AgentActivity::Idle
+            };
+            AgentStatus {
+                name: name.to_owned(),
+                activity,
+            }
+        });
+        if new_status != self.agent_status {
+            self.agent_status = new_status;
+            self.set_should_render(true);
+            true
+        } else {
+            false
+        }
+    }
     fn handle_pty_bytes(&mut self, bytes: VteBytes) {
         self.set_should_render(true);
+        self.last_output_at = Instant::now();
         if self.forward_paused {
             // A host-forward initiated by this pane is outstanding.
             // Buffer the bytes; Tab drains them on resume.
@@ -587,6 +619,7 @@ impl Pane for TerminalPane {
             frame_params,
         )
         .is_pinned(is_pinned);
+        frame.set_agent_status(self.agent_status.clone());
         if let Some((exit_status, is_first_run, _run_command)) = &self.is_held {
             if *is_first_run {
                 frame.indicate_first_run();
@@ -1436,6 +1469,8 @@ impl TerminalPane {
             pending_pty_input: VecDeque::new(),
             kitty_interceptor: KittyApcInterceptor::new(),
             copy_session: None,
+            last_output_at: Instant::now(),
+            agent_status: None,
         }
     }
 

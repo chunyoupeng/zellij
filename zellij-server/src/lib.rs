@@ -12,6 +12,7 @@ pub mod panes;
 pub mod tab;
 
 pub mod background_jobs;
+pub mod agent_detection;
 mod copy_mode;
 mod global_async_runtime;
 mod logging_pipe;
