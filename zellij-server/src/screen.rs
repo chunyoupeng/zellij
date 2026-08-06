@@ -5697,39 +5697,19 @@ impl Screen {
             .unwrap_or(false)
     }
 
-    fn scroll_position_mut(
-        &mut self,
-        client_id: ClientId,
-    ) -> Option<&mut ScrollPosition> {
-        let pane_id = self.get_active_pane_id(&client_id)?;
-        Some(self.scroll_positions.entry((client_id, pane_id)).or_default())
-    }
-
-    /// Scroll down in Scroll/Search. Uses the pane's real live-bottom state
-    /// (`!is_scrolled`): the down that lands on the bottom arms, the next down
-    /// exits to Normal. This avoids counter desync with wrapped lines / page size.
+    /// Scroll down in Scroll/Search. If the pane is already at the live bottom,
+    /// or this scroll lands on it, exit to Normal immediately (matches the
+    /// yellow→green frame cue users treat as "done scrolling").
     pub fn scroll_down_with_bottom_buffer(
         &mut self,
         client_id: ClientId,
         _rows: usize,
         kind: ScrollBufferKind,
     ) -> Result<()> {
-        if self.client_in_copy_capable_mode(client_id) && !self.active_pane_is_scrolled(client_id)
-        {
-            let should_exit = self
-                .scroll_position_mut(client_id)
-                .map(|p| p.down_at_bottom())
-                .unwrap_or(false);
-            if should_exit {
-                let base = self.mode_info.get(&client_id).and_then(|m| m.base_mode);
-                return self.change_mode(InputMode::Normal, base, client_id);
-            }
-            // Armed at live bottom — do not scroll (already there).
-            return Ok(());
-        }
-
-        if let Some(pos) = self.scroll_position_mut(client_id) {
-            pos.clear_arm();
+        let in_scroll_group = self.client_in_copy_capable_mode(client_id);
+        if in_scroll_group && !self.active_pane_is_scrolled(client_id) {
+            let base = self.mode_info.get(&client_id).and_then(|m| m.base_mode);
+            return self.change_mode(InputMode::Normal, base, client_id);
         }
 
         active_tab!(self, client_id, |tab: &mut Tab| {
@@ -5740,12 +5720,9 @@ impl Screen {
             }
         }, ?);
 
-        // The press that just reached the live bottom arms for the next press.
-        if self.client_in_copy_capable_mode(client_id) && !self.active_pane_is_scrolled(client_id)
-        {
-            if let Some(pos) = self.scroll_position_mut(client_id) {
-                pos.arm_after_reaching_bottom();
-            }
+        if in_scroll_group && !self.active_pane_is_scrolled(client_id) {
+            let base = self.mode_info.get(&client_id).and_then(|m| m.base_mode);
+            return self.change_mode(InputMode::Normal, base, client_id);
         }
         Ok(())
     }
@@ -5756,9 +5733,6 @@ impl Screen {
         _rows: usize,
         kind: ScrollBufferKind,
     ) {
-        if let Some(pos) = self.scroll_position_mut(client_id) {
-            pos.clear_arm();
-        }
         active_tab!(self, client_id, |tab: &mut Tab| {
             match kind {
                 ScrollBufferKind::Line => tab.scroll_active_terminal_up(client_id),

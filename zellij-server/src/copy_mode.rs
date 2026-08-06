@@ -301,32 +301,8 @@ fn prev_word_start(grid: &Grid, cur: Position) -> Option<Position> {
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct ScrollPosition {
-    /// Armed after a down-scroll that lands on (or is issued at) the live bottom.
-    /// The next down while still at the bottom exits Scroll/Search.
-    pub bottom_armed: bool,
-}
-
-impl ScrollPosition {
-    pub fn clear_arm(&mut self) {
-        self.bottom_armed = false;
-    }
-
-    /// Called when a down is requested while already at the live bottom.
-    /// Returns true if this press should exit to Normal.
-    pub fn down_at_bottom(&mut self) -> bool {
-        if self.bottom_armed {
-            self.bottom_armed = false;
-            true
-        } else {
-            self.bottom_armed = true;
-            false
-        }
-    }
-
-    /// After a down-scroll that just reached the live bottom, arm for the next press.
-    pub fn arm_after_reaching_bottom(&mut self) {
-        self.bottom_armed = true;
-    }
+    // Kept for per-pane bookkeeping / future use. Bottom-exit now uses the
+    // pane's real `is_scrolled` flag rather than an armed counter.
 }
 
 pub fn is_scroll_group(mode: zellij_utils::data::InputMode) -> bool {
@@ -390,16 +366,8 @@ mod tests {
     }
 
     #[test]
-    fn scroll_position_bottom_buffer() {
-        let mut pos = ScrollPosition::default();
-        assert!(!pos.down_at_bottom()); // first at bottom: arm
-        assert!(pos.bottom_armed);
-        assert!(pos.down_at_bottom()); // second: exit
-        assert!(!pos.bottom_armed);
-        pos.clear_arm();
-        pos.arm_after_reaching_bottom();
-        assert!(pos.bottom_armed);
-        assert!(pos.down_at_bottom());
+    fn scroll_position_default() {
+        let _pos = ScrollPosition::default();
     }
 
     #[test]

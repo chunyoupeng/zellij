@@ -11863,7 +11863,6 @@ fn scroll_bottom_buffer_exits_to_normal() {
     screen
         .change_mode(InputMode::Scroll, Some(InputMode::Normal), client_id)
         .expect("enter scroll");
-    // Leave the live bottom.
     screen.scroll_up_with_bottom_buffer(client_id, 1, super::ScrollBufferKind::Line);
     assert!(
         screen
@@ -11874,39 +11873,18 @@ fn scroll_bottom_buffer_exits_to_normal() {
             .is_scrolled()
     );
 
-    // Scroll back to the live bottom — this press arms, stays in Scroll.
+    // The Down that reaches the live bottom exits Scroll immediately.
     for _ in 0..30 {
         screen
             .scroll_down_with_bottom_buffer(client_id, 1, super::ScrollBufferKind::Line)
             .unwrap();
-        if !screen
-            .get_active_tab(client_id)
-            .unwrap()
-            .get_active_pane(client_id)
-            .unwrap()
-            .is_scrolled()
-        {
+        if screen.client_input_mode(client_id) == InputMode::Normal {
             break;
         }
     }
-    assert_eq!(screen.client_input_mode(client_id), InputMode::Scroll);
-    assert!(
-        !screen
-            .get_active_tab(client_id)
-            .unwrap()
-            .get_active_pane(client_id)
-            .unwrap()
-            .is_scrolled(),
-        "should be at live bottom (green frame) while still in Scroll"
-    );
-
-    // Extra Down at the live bottom exits Scroll.
-    screen
-        .scroll_down_with_bottom_buffer(client_id, 1, super::ScrollBufferKind::Line)
-        .unwrap();
     assert_eq!(
         screen.client_input_mode(client_id),
         InputMode::Normal,
-        "extra Down at live bottom should exit Scroll"
+        "Down that lands on the live bottom should exit Scroll"
     );
 }
