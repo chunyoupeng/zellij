@@ -301,25 +301,31 @@ fn prev_word_start(grid: &Grid, cur: Position) -> Option<Position> {
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct ScrollPosition {
-    pub rows_above_bottom: usize,
+    /// Armed after a down-scroll that lands on (or is issued at) the live bottom.
+    /// The next down while still at the bottom exits Scroll/Search.
     pub bottom_armed: bool,
 }
 
 impl ScrollPosition {
-    pub fn track_up(&mut self, rows: usize) {
-        self.rows_above_bottom = self.rows_above_bottom.saturating_add(rows);
+    pub fn clear_arm(&mut self) {
         self.bottom_armed = false;
     }
 
-    /// Returns true if the caller should exit to Normal instead of scrolling.
-    pub fn track_down(&mut self, rows: usize) -> bool {
-        if self.rows_above_bottom == 0 && self.bottom_armed {
+    /// Called when a down is requested while already at the live bottom.
+    /// Returns true if this press should exit to Normal.
+    pub fn down_at_bottom(&mut self) -> bool {
+        if self.bottom_armed {
             self.bottom_armed = false;
-            return true;
+            true
+        } else {
+            self.bottom_armed = true;
+            false
         }
-        self.rows_above_bottom = self.rows_above_bottom.saturating_sub(rows);
-        self.bottom_armed = self.rows_above_bottom == 0;
-        false
+    }
+
+    /// After a down-scroll that just reached the live bottom, arm for the next press.
+    pub fn arm_after_reaching_bottom(&mut self) {
+        self.bottom_armed = true;
     }
 }
 
@@ -386,16 +392,14 @@ mod tests {
     #[test]
     fn scroll_position_bottom_buffer() {
         let mut pos = ScrollPosition::default();
-        assert!(!pos.track_down(1)); // arm
+        assert!(!pos.down_at_bottom()); // first at bottom: arm
         assert!(pos.bottom_armed);
-        assert!(pos.track_down(1)); // exit
-        pos.track_up(3);
-        assert_eq!(pos.rows_above_bottom, 3);
-        assert!(!pos.track_down(2));
-        assert_eq!(pos.rows_above_bottom, 1);
-        assert!(!pos.track_down(1));
+        assert!(pos.down_at_bottom()); // second: exit
+        assert!(!pos.bottom_armed);
+        pos.clear_arm();
+        pos.arm_after_reaching_bottom();
         assert!(pos.bottom_armed);
-        assert!(pos.track_down(1));
+        assert!(pos.down_at_bottom());
     }
 
     #[test]

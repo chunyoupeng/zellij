@@ -5689,45 +5689,49 @@ impl Screen {
             .unwrap_or(20)
     }
 
-    /// Track an up-scroll while in Scroll/Search; updates the bottom-buffer counter.
-    fn track_scroll_up(&mut self, client_id: ClientId, rows: usize) {
-        if !self.client_in_copy_capable_mode(client_id) {
-            return;
-        }
-        if let Some(pane_id) = self.get_active_pane_id(&client_id) {
-            self.scroll_positions
-                .entry((client_id, pane_id))
-                .or_default()
-                .track_up(rows);
-        }
+    fn active_pane_is_scrolled(&self, client_id: ClientId) -> bool {
+        self.get_active_tab(client_id)
+            .ok()
+            .and_then(|tab| tab.get_active_pane(client_id))
+            .map(|p| p.is_scrolled())
+            .unwrap_or(false)
     }
 
-    /// Track a down-scroll. Returns true if the caller should exit to Normal.
-    fn track_scroll_down_should_exit(&mut self, client_id: ClientId, rows: usize) -> bool {
-        if !self.client_in_copy_capable_mode(client_id) {
-            return false;
-        }
-        let Some(pane_id) = self.get_active_pane_id(&client_id) else {
-            return false;
-        };
-        self.scroll_positions
-            .entry((client_id, pane_id))
-            .or_default()
-            .track_down(rows)
+    fn scroll_position_mut(
+        &mut self,
+        client_id: ClientId,
+    ) -> Option<&mut ScrollPosition> {
+        let pane_id = self.get_active_pane_id(&client_id)?;
+        Some(self.scroll_positions.entry((client_id, pane_id)).or_default())
     }
 
-    /// Scroll down in Scroll/Search; a second Down at the live bottom exits to Normal.
-    /// `rows` is the bottom-buffer counter delta; `page` / `half` select the scroll API.
+    /// Scroll down in Scroll/Search. Uses the pane's real live-bottom state
+    /// (`!is_scrolled`): the down that lands on the bottom arms, the next down
+    /// exits to Normal. This avoids counter desync with wrapped lines / page size.
     pub fn scroll_down_with_bottom_buffer(
         &mut self,
         client_id: ClientId,
-        rows: usize,
+        _rows: usize,
         kind: ScrollBufferKind,
     ) -> Result<()> {
-        if self.track_scroll_down_should_exit(client_id, rows) {
-            let base = self.mode_info.get(&client_id).and_then(|m| m.base_mode);
-            return self.change_mode(InputMode::Normal, base, client_id);
+        if self.client_in_copy_capable_mode(client_id) && !self.active_pane_is_scrolled(client_id)
+        {
+            let should_exit = self
+                .scroll_position_mut(client_id)
+                .map(|p| p.down_at_bottom())
+                .unwrap_or(false);
+            if should_exit {
+                let base = self.mode_info.get(&client_id).and_then(|m| m.base_mode);
+                return self.change_mode(InputMode::Normal, base, client_id);
+            }
+            // Armed at live bottom — do not scroll (already there).
+            return Ok(());
         }
+
+        if let Some(pos) = self.scroll_position_mut(client_id) {
+            pos.clear_arm();
+        }
+
         active_tab!(self, client_id, |tab: &mut Tab| {
             match kind {
                 ScrollBufferKind::Line => tab.scroll_active_terminal_down(client_id),
@@ -5735,16 +5739,26 @@ impl Screen {
                 ScrollBufferKind::HalfPage => tab.scroll_active_terminal_down_half_page(client_id),
             }
         }, ?);
+
+        // The press that just reached the live bottom arms for the next press.
+        if self.client_in_copy_capable_mode(client_id) && !self.active_pane_is_scrolled(client_id)
+        {
+            if let Some(pos) = self.scroll_position_mut(client_id) {
+                pos.arm_after_reaching_bottom();
+            }
+        }
         Ok(())
     }
 
     pub fn scroll_up_with_bottom_buffer(
         &mut self,
         client_id: ClientId,
-        rows: usize,
+        _rows: usize,
         kind: ScrollBufferKind,
     ) {
-        self.track_scroll_up(client_id, rows);
+        if let Some(pos) = self.scroll_position_mut(client_id) {
+            pos.clear_arm();
+        }
         active_tab!(self, client_id, |tab: &mut Tab| {
             match kind {
                 ScrollBufferKind::Line => tab.scroll_active_terminal_up(client_id),
