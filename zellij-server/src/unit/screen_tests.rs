@@ -330,6 +330,8 @@ fn create_new_screen_with_kitty_graphics(
         web_server_ip,
         web_server_port,
         NestedSessionHandling::default(),
+        None,
+        None,
     );
     screen
 }
@@ -5538,6 +5540,8 @@ fn create_new_screen_with_message_capture(
         web_server_ip,
         web_server_port,
         NestedSessionHandling::default(),
+        None,
+        None,
     );
     (screen, messages)
 }
@@ -8636,6 +8640,8 @@ fn create_new_screen_with_forward_capture(size: Size) -> (Screen, ForwardCapture
         web_server_ip,
         web_server_port,
         NestedSessionHandling::default(),
+        None,
+        None,
     );
     (
         screen,
@@ -9309,6 +9315,8 @@ fn create_new_screen_with_theme_capture(size: Size) -> (Screen, ThemeCapture) {
         web_server_ip,
         web_server_port,
         NestedSessionHandling::default(),
+        None,
+        None,
     );
     (
         screen,
@@ -9839,6 +9847,8 @@ fn create_non_mirrored_screen(size: Size) -> Screen {
         IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
         8080,
         NestedSessionHandling::default(),
+        None,
+        None,
     )
 }
 
@@ -11729,5 +11739,147 @@ fn sixel_support_recomputed_on_client_detach() {
     assert_eq!(
         active_pane.drain_messages_to_pty(),
         vec![b"\x1b[?62;52c".to_vec()]
+    );
+}
+
+#[test]
+fn per_pane_scroll_mode_restored_on_focus_change() {
+    let size = Size {
+        cols: 121,
+        rows: 20,
+    };
+    let client_id = 1;
+    let mut screen = create_new_screen(size, true, true);
+    new_tab(&mut screen, 1, 0);
+
+    let pane_one = PaneId::Terminal(1);
+    let pane_two = PaneId::Terminal(2);
+    {
+        let active_tab = screen.get_active_tab_mut(client_id).unwrap();
+        active_tab
+            .horizontal_split(pane_two, None, client_id, None, None)
+            .unwrap();
+        // Focus is on pane 2 after split; move back to pane 1.
+        active_tab.move_focus_up(client_id).unwrap();
+        assert_eq!(active_tab.get_active_pane_id(client_id), Some(pane_one));
+        // Fill pane 1 with enough lines so we can scroll.
+        for i in 0..40 {
+            active_tab
+                .handle_pty_bytes(1, format!("line {}\r\n", i).into_bytes())
+                .unwrap();
+        }
+    }
+
+    screen
+        .change_mode(InputMode::Scroll, Some(InputMode::Normal), client_id)
+        .expect("enter scroll");
+    {
+        let tab = screen.get_active_tab_mut(client_id).unwrap();
+        for _ in 0..5 {
+            tab.scroll_active_terminal_up(client_id);
+        }
+        let pane = tab.get_active_pane(client_id).unwrap();
+        assert!(pane.is_scrolled(), "pane 1 should be scrolled");
+    }
+    assert_eq!(screen.client_input_mode(client_id), InputMode::Scroll);
+
+    // Focus pane 2 via mouse — should restore Normal on the new pane.
+    screen.handle_mouse_event(
+        MouseEvent::new_left_press_event(Position::new(15, 60)),
+        client_id,
+    );
+    screen.handle_mouse_event(
+        MouseEvent::new_left_release_event(Position::new(15, 60)),
+        client_id,
+    );
+    assert_eq!(
+        screen.get_active_tab(client_id).unwrap().get_active_pane_id(client_id),
+        Some(pane_two)
+    );
+    assert_eq!(
+        screen.client_input_mode(client_id),
+        InputMode::Normal,
+        "focusing an unscrolled pane should leave Scroll"
+    );
+
+    // Focus pane 1 again — should restore Scroll and keep scroll position.
+    screen.handle_mouse_event(
+        MouseEvent::new_left_press_event(Position::new(2, 60)),
+        client_id,
+    );
+    screen.handle_mouse_event(
+        MouseEvent::new_left_release_event(Position::new(2, 60)),
+        client_id,
+    );
+    assert_eq!(
+        screen.get_active_tab(client_id).unwrap().get_active_pane_id(client_id),
+        Some(pane_one)
+    );
+    assert_eq!(
+        screen.client_input_mode(client_id),
+        InputMode::Scroll,
+        "returning to pane 1 should restore Scroll"
+    );
+    {
+        let tab = screen.get_active_tab(client_id).unwrap();
+        let pane = tab.get_pane_with_id(pane_one).unwrap();
+        assert!(
+            pane.is_scrolled(),
+            "pane 1 scroll position should be preserved across focus change"
+        );
+    }
+
+    // Explicit Esc / Normal on pane 1 should clear its scroll memory for next visit.
+    screen
+        .change_mode(InputMode::Normal, Some(InputMode::Normal), client_id)
+        .expect("leave scroll");
+    {
+        let tab = screen.get_active_tab(client_id).unwrap();
+        let pane = tab.get_pane_with_id(pane_one).unwrap();
+        assert!(
+            !pane.is_scrolled(),
+            "leaving Scroll clears scroll on the active pane"
+        );
+    }
+}
+
+#[test]
+fn scroll_bottom_buffer_exits_to_normal() {
+    let size = Size {
+        cols: 121,
+        rows: 20,
+    };
+    let client_id = 1;
+    let mut screen = create_new_screen(size, true, true);
+    new_tab(&mut screen, 1, 0);
+    {
+        let active_tab = screen.get_active_tab_mut(client_id).unwrap();
+        for i in 0..40 {
+            active_tab
+                .handle_pty_bytes(1, format!("line {}\r\n", i).into_bytes())
+                .unwrap();
+        }
+    }
+    screen
+        .change_mode(InputMode::Scroll, Some(InputMode::Normal), client_id)
+        .expect("enter scroll");
+    {
+        let tab = screen.get_active_tab_mut(client_id).unwrap();
+        tab.scroll_active_terminal_up(client_id);
+    }
+    // One more up via the bottom-buffer path, then downs until exit.
+    screen.scroll_up_with_bottom_buffer(client_id, 1, super::ScrollBufferKind::Line);
+    for _ in 0..10 {
+        screen
+            .scroll_down_with_bottom_buffer(client_id, 1, super::ScrollBufferKind::Line)
+            .unwrap();
+        if screen.client_input_mode(client_id) == InputMode::Normal {
+            break;
+        }
+    }
+    assert_eq!(
+        screen.client_input_mode(client_id),
+        InputMode::Normal,
+        "extra Down at live bottom should exit Scroll"
     );
 }

@@ -37,6 +37,10 @@ use zellij_utils::{
     shared::make_terminal_title,
 };
 
+use crate::copy_mode::{
+    self, clear_selection, sync_selection, toggle_visual, CopyModeActiveResult, CopyModeKey,
+    CopySession,
+};
 use crate::ui::pane_boundaries_frame::{FrameParams, PaneFrame};
 
 pub const SELECTION_SCROLL_INTERVAL_MS: u64 = 10;
@@ -177,6 +181,8 @@ pub struct TerminalPane {
     /// has been written.
     pending_pty_input: VecDeque<u8>,
     kitty_interceptor: KittyApcInterceptor,
+    /// Vim-like keyboard selection while the client is in Scroll/Search.
+    copy_session: Option<CopySession>,
 }
 
 impl Pane for TerminalPane {
@@ -924,6 +930,33 @@ impl Pane for TerminalPane {
         self.grid.get_selected_text()
     }
 
+    fn is_in_copy_mode(&self) -> bool {
+        self.copy_session.is_some()
+    }
+
+    fn enter_copy_mode(&mut self) {
+        TerminalPane::enter_copy_mode(self);
+    }
+
+    fn exit_copy_mode(&mut self) {
+        TerminalPane::exit_copy_mode(self);
+    }
+
+    fn toggle_copy_visual(&mut self) {
+        TerminalPane::toggle_copy_visual(self);
+    }
+
+    fn handle_copy_mode_key_active(
+        &mut self,
+        key: CopyModeKey,
+    ) -> CopyModeActiveResult {
+        TerminalPane::handle_copy_mode_key_active(self, key)
+    }
+
+    fn resync_copy_selection_after_scroll(&mut self) {
+        TerminalPane::resync_copy_selection_after_scroll(self);
+    }
+
     fn set_frame(&mut self, _frame: bool) {
         self.frame.clear();
     }
@@ -1402,6 +1435,64 @@ impl TerminalPane {
             guest_modal_shortcuts: GuestModalShortcuts::default(),
             pending_pty_input: VecDeque::new(),
             kitty_interceptor: KittyApcInterceptor::new(),
+            copy_session: None,
+        }
+    }
+
+    pub fn is_in_copy_mode(&self) -> bool {
+        self.copy_session.is_some()
+    }
+
+    pub fn enter_copy_mode(&mut self) {
+        let session = CopySession::new_at_origin();
+        sync_selection(&mut self.grid, &session);
+        self.copy_session = Some(session);
+        self.set_should_render(true);
+    }
+
+    pub fn exit_copy_mode(&mut self) {
+        if self.copy_session.take().is_some() {
+            clear_selection(&mut self.grid);
+            self.set_should_render(true);
+        }
+    }
+
+    pub fn toggle_copy_visual(&mut self) {
+        if let Some(session) = self.copy_session.as_mut() {
+            toggle_visual(session, &mut self.grid);
+            self.set_should_render(true);
+        }
+    }
+
+    /// Handle a copy-mode key while active. Returns what the caller should do next.
+    pub fn handle_copy_mode_key_active(&mut self, key: CopyModeKey) -> CopyModeActiveResult {
+        let Some(session) = self.copy_session.as_mut() else {
+            return CopyModeActiveResult::Exit { yank: false };
+        };
+        let result = copy_mode::handle_active_key(session, &mut self.grid, key);
+        match result {
+            CopyModeActiveResult::Continue => {
+                self.set_should_render(true);
+            },
+            CopyModeActiveResult::Exit { yank } => {
+                self.copy_session = None;
+                // Keep selection until the caller yanks, then they call exit_copy_mode.
+                if !yank {
+                    clear_selection(&mut self.grid);
+                }
+                self.set_should_render(true);
+            },
+            CopyModeActiveResult::ScrollUp | CopyModeActiveResult::ScrollDown => {
+                // Caller scrolls, then we re-sync.
+            },
+        }
+        result
+    }
+
+    pub fn resync_copy_selection_after_scroll(&mut self) {
+        if let Some(session) = self.copy_session.as_ref().copied() {
+            sync_selection(&mut self.grid, &session);
+            self.set_should_render(true);
         }
     }
     pub fn get_x(&self) -> usize {

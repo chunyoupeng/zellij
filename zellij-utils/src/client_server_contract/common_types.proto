@@ -285,6 +285,17 @@ message Action {
     FocusHostSessionAction focus_host_session = 145;
     ToggleHostFullscreenAction toggle_host_fullscreen = 146;
     FocusGuestSessionAction focus_guest_session = 147;
+    ToggleCopyModeAction toggle_copy_mode = 148;
+    CopyModeMoveAction copy_mode_move = 149;
+    CopyModePageScrollAction copy_mode_page_scroll = 150;
+    CopyModeHalfPageScrollAction copy_mode_half_page_scroll = 151;
+    CopyModeLineStartAction copy_mode_line_start = 152;
+    CopyModeLineEndAction copy_mode_line_end = 153;
+    CopyModeWordStartAction copy_mode_word_start = 154;
+    CopyModeWordEndAction copy_mode_word_end = 155;
+    CopyModeWordBackAction copy_mode_word_back = 156;
+    CopyModeYankAction copy_mode_yank = 157;
+    CopyModeCancelAction copy_mode_cancel = 158;
   }
 }
 
@@ -345,6 +356,23 @@ message SetDarkThemeAction {}
 message SetLightThemeAction {}
 message ToggleThemeAction {}
 message CopyAction {}
+message ToggleCopyModeAction {}
+message CopyModeMoveAction {
+  Direction direction = 1;
+}
+message CopyModePageScrollAction {
+  Direction direction = 1;
+}
+message CopyModeHalfPageScrollAction {
+  Direction direction = 1;
+}
+message CopyModeLineStartAction {}
+message CopyModeLineEndAction {}
+message CopyModeWordStartAction {}
+message CopyModeWordEndAction {}
+message CopyModeWordBackAction {}
+message CopyModeYankAction {}
+message CopyModeCancelAction {}
 message ConfirmAction {}
 message DenyAction {}
 message ToggleMouseModeAction {}

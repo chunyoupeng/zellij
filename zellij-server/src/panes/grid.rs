@@ -2945,6 +2945,17 @@ impl Grid {
         selections
     }
 
+    /// Set an exact half-open selection range without mouse click tracking.
+    /// Used by native copy mode so rapid cursor updates cannot become
+    /// double/triple-click word/line selections.
+    pub fn set_selection_range(&mut self, start: &Position, end: &Position) {
+        let old_selection = self.selection;
+        self.selection
+            .set_start_and_end_positions(*start, *end);
+        self.update_selected_lines(&old_selection, &self.selection.clone());
+        self.mark_for_rerender();
+    }
+
     pub fn start_selection(&mut self, start: &Position) {
         let old_selection = self.selection;
         self.click.record_click(*start);

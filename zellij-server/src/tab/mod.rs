@@ -388,6 +388,19 @@ pub trait Pane {
     fn get_selected_text(&self, _client_id: ClientId) -> Option<String> {
         None
     }
+    fn is_in_copy_mode(&self) -> bool {
+        false
+    }
+    fn enter_copy_mode(&mut self) {}
+    fn exit_copy_mode(&mut self) {}
+    fn toggle_copy_visual(&mut self) {}
+    fn handle_copy_mode_key_active(
+        &mut self,
+        _key: crate::copy_mode::CopyModeKey,
+    ) -> crate::copy_mode::CopyModeActiveResult {
+        crate::copy_mode::CopyModeActiveResult::Exit { yank: false }
+    }
+    fn resync_copy_selection_after_scroll(&mut self) {}
     fn set_pane_default_colors(&mut self, _fg: Option<String>, _bg: Option<String>) {}
     fn get_pane_default_colors(&self) -> (Option<String>, Option<String>) {
         (None, None)
@@ -6705,6 +6718,12 @@ impl Tab {
     pub fn clear_search(&mut self, client_id: ClientId) {
         if let Some(active_pane) = self.get_active_pane_or_floating_pane_mut(client_id) {
             active_pane.clear_search();
+        }
+    }
+
+    pub fn exit_copy_mode_on_active_pane(&mut self, client_id: ClientId) {
+        if let Some(active_pane) = self.get_active_pane_or_floating_pane_mut(client_id) {
+            active_pane.exit_copy_mode();
         }
     }
 

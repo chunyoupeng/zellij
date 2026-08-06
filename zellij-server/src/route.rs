@@ -1226,6 +1226,116 @@ pub(crate) fn route_action(
                 ))
                 .with_context(err_context)?;
         },
+        Action::ToggleCopyMode => {
+            senders
+                .send_to_screen(ScreenInstruction::ToggleCopyMode(
+                    client_id,
+                    Some(NotificationEnd::new(completion_tx)),
+                ))
+                .with_context(err_context)?;
+        },
+        Action::CopyModeMove { direction } => {
+            let key = match direction {
+                Direction::Left => crate::copy_mode::CopyModeKey::Left,
+                Direction::Right => crate::copy_mode::CopyModeKey::Right,
+                Direction::Up => crate::copy_mode::CopyModeKey::Up,
+                Direction::Down => crate::copy_mode::CopyModeKey::Down,
+            };
+            senders
+                .send_to_screen(ScreenInstruction::CopyModeKey(
+                    key,
+                    client_id,
+                    Some(NotificationEnd::new(completion_tx)),
+                ))
+                .with_context(err_context)?;
+        },
+        Action::CopyModePageScroll { direction } => {
+            let key = match direction {
+                Direction::Up | Direction::Left => crate::copy_mode::CopyModeKey::PageUp,
+                Direction::Down | Direction::Right => crate::copy_mode::CopyModeKey::PageDown,
+            };
+            senders
+                .send_to_screen(ScreenInstruction::CopyModeKey(
+                    key,
+                    client_id,
+                    Some(NotificationEnd::new(completion_tx)),
+                ))
+                .with_context(err_context)?;
+        },
+        Action::CopyModeHalfPageScroll { direction } => {
+            let key = match direction {
+                Direction::Up | Direction::Left => crate::copy_mode::CopyModeKey::HalfPageUp,
+                Direction::Down | Direction::Right => crate::copy_mode::CopyModeKey::HalfPageDown,
+            };
+            senders
+                .send_to_screen(ScreenInstruction::CopyModeKey(
+                    key,
+                    client_id,
+                    Some(NotificationEnd::new(completion_tx)),
+                ))
+                .with_context(err_context)?;
+        },
+        Action::CopyModeLineStart => {
+            senders
+                .send_to_screen(ScreenInstruction::CopyModeKey(
+                    crate::copy_mode::CopyModeKey::LineStart,
+                    client_id,
+                    Some(NotificationEnd::new(completion_tx)),
+                ))
+                .with_context(err_context)?;
+        },
+        Action::CopyModeLineEnd => {
+            senders
+                .send_to_screen(ScreenInstruction::CopyModeKey(
+                    crate::copy_mode::CopyModeKey::LineEnd,
+                    client_id,
+                    Some(NotificationEnd::new(completion_tx)),
+                ))
+                .with_context(err_context)?;
+        },
+        Action::CopyModeWordStart => {
+            senders
+                .send_to_screen(ScreenInstruction::CopyModeKey(
+                    crate::copy_mode::CopyModeKey::WordStart,
+                    client_id,
+                    Some(NotificationEnd::new(completion_tx)),
+                ))
+                .with_context(err_context)?;
+        },
+        Action::CopyModeWordEnd => {
+            senders
+                .send_to_screen(ScreenInstruction::CopyModeKey(
+                    crate::copy_mode::CopyModeKey::WordEnd,
+                    client_id,
+                    Some(NotificationEnd::new(completion_tx)),
+                ))
+                .with_context(err_context)?;
+        },
+        Action::CopyModeWordBack => {
+            senders
+                .send_to_screen(ScreenInstruction::CopyModeKey(
+                    crate::copy_mode::CopyModeKey::WordBack,
+                    client_id,
+                    Some(NotificationEnd::new(completion_tx)),
+                ))
+                .with_context(err_context)?;
+        },
+        Action::CopyModeYank => {
+            senders
+                .send_to_screen(ScreenInstruction::CopyModeYank(
+                    client_id,
+                    Some(NotificationEnd::new(completion_tx)),
+                ))
+                .with_context(err_context)?;
+        },
+        Action::CopyModeCancel => {
+            senders
+                .send_to_screen(ScreenInstruction::CopyModeCancel(
+                    client_id,
+                    Some(NotificationEnd::new(completion_tx)),
+                ))
+                .with_context(err_context)?;
+        },
         Action::Confirm => {
             // no-op, these are deprecated and should be removed when we upgrade the server/client
             // contract

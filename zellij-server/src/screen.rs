@@ -100,7 +100,22 @@ use zellij_utils::{
     nested_session::{self, NestedSessionCapability, NestedSessionMessage},
 };
 
+use crate::copy_mode::{is_scroll_group, is_steady, CopyModeKey, ScrollPosition};
 use crate::mobile_mode::{MobileRenderGate, MobileState, ShadowFocusOutcome, FIT_RESIZE_MAX_ITERS};
+
+#[derive(Debug, Default, PartialEq)]
+enum ImeState {
+    #[default]
+    Idle,
+    Engaged(Option<String>),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScrollBufferKind {
+    Line,
+    Page,
+    HalfPage,
+}
 
 /// Parses a namespaced OSC 99 response and extracts the original pane ID
 /// and un-namespaced response bytes.
@@ -593,6 +608,10 @@ pub enum ScreenInstruction {
     ChangeModeForAllClients(InputMode, Option<InputMode>, Option<NotificationEnd>),
     MouseEvent(MouseEvent, ClientId, Option<NotificationEnd>),
     Copy(ClientId, Option<NotificationEnd>),
+    ToggleCopyMode(ClientId, Option<NotificationEnd>),
+    CopyModeKey(CopyModeKey, ClientId, Option<NotificationEnd>),
+    CopyModeYank(ClientId, Option<NotificationEnd>),
+    CopyModeCancel(ClientId, Option<NotificationEnd>),
     AddClient(
         ClientId,
         bool,                // is_web_client
@@ -1101,6 +1120,10 @@ impl From<&ScreenInstruction> for ScreenContext {
             ScreenInstruction::ScrollDownAt(..) => ScreenContext::ScrollDownAt,
             ScreenInstruction::MouseEvent(..) => ScreenContext::MouseEvent,
             ScreenInstruction::Copy(..) => ScreenContext::Copy,
+            ScreenInstruction::ToggleCopyMode(..) => ScreenContext::Copy,
+            ScreenInstruction::CopyModeKey(..) => ScreenContext::Copy,
+            ScreenInstruction::CopyModeYank(..) => ScreenContext::Copy,
+            ScreenInstruction::CopyModeCancel(..) => ScreenContext::Copy,
             ScreenInstruction::ToggleTab(..) => ScreenContext::ToggleTab,
             ScreenInstruction::AddClient(..) => ScreenContext::AddClient,
             ScreenInstruction::RemoveClient(..) => ScreenContext::RemoveClient,
@@ -1585,6 +1608,14 @@ pub(crate) struct Screen {
     nested_session_handling: NestedSessionHandling,
     mobile_state: MobileState,
     mobile_render_gate: MobileRenderGate,
+    /// Per-client, per-pane remembered steady input mode (Normal/Scroll/Search/EnterSearch).
+    pane_modes: HashMap<(ClientId, PaneId), InputMode>,
+    /// Per-client, per-pane scroll distance tracker for bottom-buffer exit.
+    scroll_positions: HashMap<(ClientId, PaneId), ScrollPosition>,
+    ime_switch_command: Option<String>,
+    ime_english: Option<String>,
+    ime_enabled: bool,
+    ime_state: ImeState,
 }
 
 /// A pending forward waiting to be dispatched once the current in-flight
@@ -1670,6 +1701,8 @@ impl Screen {
         web_server_ip: IpAddr,
         web_server_port: u16,
         nested_session_handling: NestedSessionHandling,
+        ime_switch_command: Option<String>,
+        ime_english: Option<String>,
     ) -> Self {
         let session_name = mode_info.session_name.clone().unwrap_or_default();
         let session_info = SessionInfo::new(session_name.clone());
@@ -1766,6 +1799,12 @@ impl Screen {
             mobile_state: MobileState::default(),
             nested_session_handling,
             mobile_render_gate: MobileRenderGate::default(),
+            pane_modes: HashMap::new(),
+            scroll_positions: HashMap::new(),
+            ime_switch_command,
+            ime_english,
+            ime_enabled: true,
+            ime_state: ImeState::Idle,
         }
     }
 
@@ -3408,6 +3447,9 @@ impl Screen {
         new_pane_id: PaneId,
         entered_from_direction: Option<Direction>,
     ) {
+        if old_pane_id != new_pane_id {
+            self.restore_pane_mode_after_focus_change(client_id, old_pane_id, new_pane_id);
+        }
         let should_route = self.should_route_keys_to_pane(client_id, new_pane_id);
         let guest_pane_id = if should_route {
             Some(new_pane_id)
@@ -5485,6 +5527,14 @@ impl Screen {
         Ok(())
     }
 
+    #[cfg(test)]
+    pub fn client_input_mode(&self, client_id: ClientId) -> InputMode {
+        self.mode_info
+            .get(&client_id)
+            .map(|m| m.mode)
+            .unwrap_or(self.default_mode_info.mode)
+    }
+
     pub fn change_mode(
         &mut self,
         new_mode: InputMode,
@@ -5515,17 +5565,28 @@ impl Screen {
         if search_related_modes.contains(&previous_mode)
             && !search_related_modes.contains(&mode_info.mode)
         {
-            active_tab!(self, client_id, |tab: &mut Tab| tab.clear_search(client_id));
+            active_tab!(self, client_id, |tab: &mut Tab| {
+                tab.exit_copy_mode_on_active_pane(client_id);
+                tab.clear_search(client_id);
+            });
         }
 
         if previous_mode == InputMode::Scroll
             && (mode_info.mode == InputMode::Normal || mode_info.mode == InputMode::Locked)
         {
             if let Ok(active_tab) = self.get_active_tab_mut(client_id) {
+                active_tab.exit_copy_mode_on_active_pane(client_id);
                 active_tab
                     .clear_active_terminal_scroll(client_id)
                     .with_context(err_context)?;
             }
+        }
+
+        // IME: engage English while in the scroll group, restore on leave.
+        if is_scroll_group(mode_info.mode) && !is_scroll_group(previous_mode) {
+            self.ime_engage();
+        } else if is_scroll_group(previous_mode) && !is_scroll_group(mode_info.mode) {
+            self.ime_restore();
         }
 
         if mode_info.mode == InputMode::RenameTab {
@@ -5568,8 +5629,213 @@ impl Screen {
                 .send_to_plugin(PluginInstruction::Update(bg_updates))
                 .context("failed to update background plugins with mode info")?;
         }
+
+        // Remember steady modes per focused pane.
+        if is_steady(new_mode) {
+            if let Some(pane_id) = self.get_active_pane_id(&client_id) {
+                self.pane_modes.insert((client_id, pane_id), new_mode);
+                if matches!(new_mode, InputMode::Search | InputMode::Scroll) {
+                    self.scroll_positions
+                        .entry((client_id, pane_id))
+                        .or_default();
+                } else if new_mode == InputMode::Normal {
+                    self.scroll_positions.remove(&(client_id, pane_id));
+                }
+            }
+        }
         Ok(())
     }
+
+    fn restore_pane_mode_after_focus_change(
+        &mut self,
+        client_id: ClientId,
+        old_pane_id: PaneId,
+        new_pane_id: PaneId,
+    ) {
+        if old_pane_id == new_pane_id {
+            return;
+        }
+        // Leaving a pane in copy mode: drop its selection so it doesn't linger.
+        if let Ok(tab) = self.get_active_tab_mut(client_id) {
+            if let Some(pane) = tab.get_pane_with_id_mut(old_pane_id) {
+                pane.exit_copy_mode();
+            }
+        }
+        let current = self
+            .mode_info
+            .get(&client_id)
+            .map(|m| m.mode)
+            .unwrap_or(self.default_mode_info.mode);
+        let desired = self
+            .pane_modes
+            .get(&(client_id, new_pane_id))
+            .copied()
+            .unwrap_or(InputMode::Normal);
+        if (is_scroll_group(current) || is_scroll_group(desired)) && desired != current {
+            let base_mode = self
+                .mode_info
+                .get(&client_id)
+                .and_then(|m| m.base_mode)
+                .or(self.default_mode_info.base_mode);
+            let _ = self.change_mode(desired, base_mode, client_id);
+        }
+    }
+
+    fn active_pane_rows(&self, client_id: ClientId) -> usize {
+        self.get_active_tab(client_id)
+            .ok()
+            .and_then(|tab| tab.get_active_pane(client_id))
+            .map(|p| p.rows().max(1))
+            .unwrap_or(20)
+    }
+
+    /// Track an up-scroll while in Scroll/Search; updates the bottom-buffer counter.
+    fn track_scroll_up(&mut self, client_id: ClientId, rows: usize) {
+        if !self.client_in_copy_capable_mode(client_id) {
+            return;
+        }
+        if let Some(pane_id) = self.get_active_pane_id(&client_id) {
+            self.scroll_positions
+                .entry((client_id, pane_id))
+                .or_default()
+                .track_up(rows);
+        }
+    }
+
+    /// Track a down-scroll. Returns true if the caller should exit to Normal.
+    fn track_scroll_down_should_exit(&mut self, client_id: ClientId, rows: usize) -> bool {
+        if !self.client_in_copy_capable_mode(client_id) {
+            return false;
+        }
+        let Some(pane_id) = self.get_active_pane_id(&client_id) else {
+            return false;
+        };
+        self.scroll_positions
+            .entry((client_id, pane_id))
+            .or_default()
+            .track_down(rows)
+    }
+
+    /// Scroll down in Scroll/Search; a second Down at the live bottom exits to Normal.
+    /// `rows` is the bottom-buffer counter delta; `page` / `half` select the scroll API.
+    pub fn scroll_down_with_bottom_buffer(
+        &mut self,
+        client_id: ClientId,
+        rows: usize,
+        kind: ScrollBufferKind,
+    ) -> Result<()> {
+        if self.track_scroll_down_should_exit(client_id, rows) {
+            let base = self.mode_info.get(&client_id).and_then(|m| m.base_mode);
+            return self.change_mode(InputMode::Normal, base, client_id);
+        }
+        active_tab!(self, client_id, |tab: &mut Tab| {
+            match kind {
+                ScrollBufferKind::Line => tab.scroll_active_terminal_down(client_id),
+                ScrollBufferKind::Page => tab.scroll_active_terminal_down_page(client_id),
+                ScrollBufferKind::HalfPage => tab.scroll_active_terminal_down_half_page(client_id),
+            }
+        }, ?);
+        Ok(())
+    }
+
+    pub fn scroll_up_with_bottom_buffer(
+        &mut self,
+        client_id: ClientId,
+        rows: usize,
+        kind: ScrollBufferKind,
+    ) {
+        self.track_scroll_up(client_id, rows);
+        active_tab!(self, client_id, |tab: &mut Tab| {
+            match kind {
+                ScrollBufferKind::Line => tab.scroll_active_terminal_up(client_id),
+                ScrollBufferKind::Page => tab.scroll_active_terminal_up_page(client_id),
+                ScrollBufferKind::HalfPage => tab.scroll_active_terminal_up_half_page(client_id),
+            }
+        });
+    }
+
+    fn client_in_copy_capable_mode(&self, client_id: ClientId) -> bool {
+        matches!(
+            self.mode_info.get(&client_id).map(|m| m.mode),
+            Some(InputMode::Scroll | InputMode::Search)
+        )
+    }
+
+    fn ime_engage(&mut self) {
+        if !self.ime_enabled || self.ime_state != ImeState::Idle {
+            return;
+        }
+        let (Some(cmd), Some(english)) = (
+            self.ime_switch_command.clone(),
+            self.ime_english.clone(),
+        ) else {
+            return;
+        };
+        let prev = std::process::Command::new("/bin/zsh")
+            .args(["-lc", &cmd])
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned())
+            .filter(|s| !s.is_empty());
+        let Some(prev) = prev else {
+            self.ime_enabled = false;
+            return;
+        };
+        self.ime_state = ImeState::Engaged((prev != english).then_some(prev));
+        let set_cmd = format!("{} '{}'", cmd, english);
+        let _ = std::process::Command::new("/bin/zsh")
+            .args(["-lc", &set_cmd])
+            .output();
+    }
+
+    fn ime_restore(&mut self) {
+        if let ImeState::Engaged(Some(prev)) = std::mem::take(&mut self.ime_state) {
+            if let Some(cmd) = self.ime_switch_command.clone() {
+                let set_cmd = format!("{} '{}'", cmd, prev);
+                let _ = std::process::Command::new("/bin/zsh")
+                    .args(["-lc", &set_cmd])
+                    .output();
+            }
+        }
+    }
+
+    pub fn handle_toggle_copy_mode(&mut self, client_id: ClientId) -> Result<()> {
+        // Native vim-like copy/selection mode is temporarily disabled: clear any
+        // leftover session so a stray ToggleCopyMode cannot paint a selection.
+        active_tab!(self, client_id, |tab: &mut Tab| {
+            tab.exit_copy_mode_on_active_pane(client_id);
+        });
+        Ok(())
+    }
+
+    pub fn handle_copy_mode_cancel(&mut self, client_id: ClientId) -> Result<()> {
+        // Copy/selection mode disabled — just clear any leftover session.
+        active_tab!(self, client_id, |tab: &mut Tab| {
+            tab.exit_copy_mode_on_active_pane(client_id);
+        });
+        Ok(())
+    }
+
+    pub fn handle_copy_mode_yank(&mut self, client_id: ClientId) -> Result<()> {
+        active_tab!(self, client_id, |tab: &mut Tab| {
+            tab.exit_copy_mode_on_active_pane(client_id);
+        });
+        Ok(())
+    }
+
+    pub fn handle_copy_mode_key(
+        &mut self,
+        client_id: ClientId,
+        _key: CopyModeKey,
+    ) -> Result<()> {
+        // Copy/selection mode disabled — clear any leftover session.
+        active_tab!(self, client_id, |tab: &mut Tab| {
+            tab.exit_copy_mode_on_active_pane(client_id);
+        });
+        Ok(())
+    }
+
     pub fn change_mode_for_all_clients(
         &mut self,
         new_mode: InputMode,
@@ -7566,6 +7832,8 @@ pub(crate) fn screen_thread_main(
         web_server_ip,
         web_server_port,
         nested_session_handling,
+        config_options.ime_switch_command.clone(),
+        config_options.ime_english.clone(),
     );
     screen.host_theme_dark_styling = host_theme_dark_styling;
     screen.host_theme_light_styling = host_theme_light_styling;
@@ -8591,10 +8859,10 @@ pub(crate) fn screen_thread_main(
                 _completion_tx, // the action ends here, dropping this will release anything
                                 // waiting for it
             ) => {
-                active_tab_and_connected_client_id!(
-                    screen,
+                screen.scroll_up_with_bottom_buffer(
                     client_id,
-                    |tab: &mut Tab, client_id: ClientId| tab.scroll_active_terminal_up(client_id)
+                    1,
+                    ScrollBufferKind::Line,
                 );
                 screen.render(None)?;
             },
@@ -8695,11 +8963,11 @@ pub(crate) fn screen_thread_main(
                 _completion_tx, // the action ends here, dropping this will release anything
                                 // waiting for it
             ) => {
-                active_tab_and_connected_client_id!(
-                    screen,
+                screen.scroll_down_with_bottom_buffer(
                     client_id,
-                    |tab: &mut Tab, client_id: ClientId| tab.scroll_active_terminal_down(client_id), ?
-                );
+                    1,
+                    ScrollBufferKind::Line,
+                )?;
                 screen.render(None)?;
             },
             ScreenInstruction::ScrollDownAt(
@@ -8747,11 +9015,11 @@ pub(crate) fn screen_thread_main(
                 _completion_tx, // the action ends here, dropping this will release anything
                                 // waiting for it
             ) => {
-                active_tab_and_connected_client_id!(
-                    screen,
+                let rows = screen.active_pane_rows(client_id);
+                screen.scroll_up_with_bottom_buffer(
                     client_id,
-                    |tab: &mut Tab, client_id: ClientId| tab
-                        .scroll_active_terminal_up_page(client_id)
+                    rows,
+                    ScrollBufferKind::Page,
                 );
                 screen.render(None)?;
             },
@@ -8760,12 +9028,12 @@ pub(crate) fn screen_thread_main(
                 _completion_tx, // the action ends here, dropping this will release anything
                                 // waiting for it
             ) => {
-                active_tab_and_connected_client_id!(
-                    screen,
+                let rows = screen.active_pane_rows(client_id);
+                screen.scroll_down_with_bottom_buffer(
                     client_id,
-                    |tab: &mut Tab, client_id: ClientId| tab
-                        .scroll_active_terminal_down_page(client_id), ?
-                );
+                    rows,
+                    ScrollBufferKind::Page,
+                )?;
                 screen.render(None)?;
             },
             ScreenInstruction::HalfPageScrollUp(
@@ -8773,11 +9041,11 @@ pub(crate) fn screen_thread_main(
                 _completion_tx, // the action ends here, dropping this will release anything
                                 // waiting for it
             ) => {
-                active_tab_and_connected_client_id!(
-                    screen,
+                let rows = (screen.active_pane_rows(client_id).saturating_sub(1) / 2).max(1);
+                screen.scroll_up_with_bottom_buffer(
                     client_id,
-                    |tab: &mut Tab, client_id: ClientId| tab
-                        .scroll_active_terminal_up_half_page(client_id)
+                    rows,
+                    ScrollBufferKind::HalfPage,
                 );
                 screen.render(None)?;
             },
@@ -8786,12 +9054,12 @@ pub(crate) fn screen_thread_main(
                 _completion_tx, // the action ends here, dropping this will release anything
                                 // waiting for it
             ) => {
-                active_tab_and_connected_client_id!(
-                    screen,
+                let rows = (screen.active_pane_rows(client_id).saturating_sub(1) / 2).max(1);
+                screen.scroll_down_with_bottom_buffer(
                     client_id,
-                    |tab: &mut Tab, client_id: ClientId| tab
-                        .scroll_active_terminal_down_half_page(client_id), ?
-                );
+                    rows,
+                    ScrollBufferKind::HalfPage,
+                )?;
                 screen.render(None)?;
             },
             ScreenInstruction::ClearScroll(client_id) => {
@@ -9475,6 +9743,22 @@ pub(crate) fn screen_thread_main(
             ) => {
                 active_tab!(screen, client_id, |tab: &mut Tab| tab
                     .copy_selection(client_id), ?);
+                screen.render(None)?;
+            },
+            ScreenInstruction::ToggleCopyMode(client_id, _completion_tx) => {
+                screen.handle_toggle_copy_mode(client_id)?;
+                screen.render(None)?;
+            },
+            ScreenInstruction::CopyModeKey(key, client_id, _completion_tx) => {
+                screen.handle_copy_mode_key(client_id, key)?;
+                screen.render(None)?;
+            },
+            ScreenInstruction::CopyModeYank(client_id, _completion_tx) => {
+                screen.handle_copy_mode_yank(client_id)?;
+                screen.render(None)?;
+            },
+            ScreenInstruction::CopyModeCancel(client_id, _completion_tx) => {
+                screen.handle_copy_mode_cancel(client_id)?;
                 screen.render(None)?;
             },
             ScreenInstruction::Exit => {

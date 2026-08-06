@@ -403,6 +403,27 @@ pub enum Action {
         event: MouseEvent,
     },
     Copy,
+    /// Enter copy mode (or toggle visual selection while already in it).
+    ToggleCopyMode,
+    /// Move the copy-mode cursor, or fall through to scroll when inactive.
+    /// Left/Right fall through to page scroll; Up/Down to line scroll.
+    CopyModeMove {
+        direction: Direction,
+    },
+    CopyModePageScroll {
+        direction: Direction,
+    },
+    CopyModeHalfPageScroll {
+        direction: Direction,
+    },
+    CopyModeLineStart,
+    CopyModeLineEnd,
+    CopyModeWordStart,
+    CopyModeWordEnd,
+    CopyModeWordBack,
+    CopyModeYank,
+    /// Leave visual selection, or exit copy mode; when inactive, exit to Normal.
+    CopyModeCancel,
     /// Confirm a prompt
     Confirm,
     /// Deny a prompt

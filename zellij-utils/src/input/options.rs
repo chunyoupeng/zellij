@@ -245,6 +245,19 @@ pub struct Options {
     #[serde(default)]
     pub copy_command: Option<String>,
 
+    /// Command used to query/set the OS input method (e.g. `im-select`).
+    /// When set together with `ime_english`, Zellij switches to the English
+    /// layout while in Scroll/Search/EnterSearch and restores afterwards.
+    #[clap(long, value_parser)]
+    #[serde(default)]
+    pub ime_switch_command: Option<String>,
+
+    /// English input-method id passed to `ime_switch_command` (e.g.
+    /// `com.apple.keylayout.ABC`).
+    #[clap(long, value_parser)]
+    #[serde(default)]
+    pub ime_english: Option<String>,
+
     /// OSC52 destination clipboard
     #[clap(
         long,
@@ -515,6 +528,10 @@ impl Options {
         let on_force_close = other.on_force_close.or(self.on_force_close);
         let scroll_buffer_size = other.scroll_buffer_size.or(self.scroll_buffer_size);
         let copy_command = other.copy_command.or_else(|| self.copy_command.clone());
+        let ime_switch_command = other
+            .ime_switch_command
+            .or_else(|| self.ime_switch_command.clone());
+        let ime_english = other.ime_english.or_else(|| self.ime_english.clone());
         let copy_clipboard = other.copy_clipboard.or(self.copy_clipboard);
         let copy_on_select = other.copy_on_select.or(self.copy_on_select);
         let osc8_hyperlinks = other.osc8_hyperlinks.or(self.osc8_hyperlinks);
@@ -595,6 +612,8 @@ impl Options {
             on_force_close,
             scroll_buffer_size,
             copy_command,
+            ime_switch_command,
+            ime_english,
             copy_clipboard,
             copy_on_select,
             osc8_hyperlinks,
@@ -674,6 +693,10 @@ impl Options {
         let on_force_close = other.on_force_close.or(self.on_force_close);
         let scroll_buffer_size = other.scroll_buffer_size.or(self.scroll_buffer_size);
         let copy_command = other.copy_command.or_else(|| self.copy_command.clone());
+        let ime_switch_command = other
+            .ime_switch_command
+            .or_else(|| self.ime_switch_command.clone());
+        let ime_english = other.ime_english.or_else(|| self.ime_english.clone());
         let copy_clipboard = other.copy_clipboard.or(self.copy_clipboard);
         let copy_on_select = other.copy_on_select.or(self.copy_on_select);
         let osc8_hyperlinks = other.osc8_hyperlinks.or(self.osc8_hyperlinks);
@@ -750,6 +773,8 @@ impl Options {
             on_force_close,
             scroll_buffer_size,
             copy_command,
+            ime_switch_command,
+            ime_english,
             copy_clipboard,
             copy_on_select,
             osc8_hyperlinks,

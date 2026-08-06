@@ -2008,6 +2008,17 @@ impl TryFrom<Action> for ProtobufAction {
             }
             | Action::Deny
             | Action::Copy
+            | Action::ToggleCopyMode
+            | Action::CopyModeMove { .. }
+            | Action::CopyModePageScroll { .. }
+            | Action::CopyModeHalfPageScroll { .. }
+            | Action::CopyModeLineStart
+            | Action::CopyModeLineEnd
+            | Action::CopyModeWordStart
+            | Action::CopyModeWordEnd
+            | Action::CopyModeWordBack
+            | Action::CopyModeYank
+            | Action::CopyModeCancel
             | Action::DumpLayout
             | Action::CliPipe { .. }
             | Action::ListClients

@@ -83,6 +83,14 @@ macro_rules! parse_kdl_action_arguments {
                 "SetLightTheme" => Ok(Action::SetLightTheme),
                 "ToggleTheme" => Ok(Action::ToggleTheme),
                 "Copy" => Ok(Action::Copy),
+                "ToggleCopyMode" => Ok(Action::ToggleCopyMode),
+                "CopyModeLineStart" => Ok(Action::CopyModeLineStart),
+                "CopyModeLineEnd" => Ok(Action::CopyModeLineEnd),
+                "CopyModeWordStart" => Ok(Action::CopyModeWordStart),
+                "CopyModeWordEnd" => Ok(Action::CopyModeWordEnd),
+                "CopyModeWordBack" => Ok(Action::CopyModeWordBack),
+                "CopyModeYank" => Ok(Action::CopyModeYank),
+                "CopyModeCancel" => Ok(Action::CopyModeCancel),
                 "Confirm" => Ok(Action::Confirm),
                 "Deny" => Ok(Action::Deny),
                 "ToggleMouseMode" => Ok(Action::ToggleMouseMode),
@@ -512,6 +520,36 @@ impl Action {
                     )
                 })?;
                 Ok(Action::MoveFocus { direction })
+            },
+            "CopyModeMove" => {
+                let direction = Direction::from_str(string.as_str()).map_err(|_| {
+                    ConfigError::new_kdl_error(
+                        format!("Invalid direction: '{}'", string),
+                        action_node.span().offset(),
+                        action_node.span().len(),
+                    )
+                })?;
+                Ok(Action::CopyModeMove { direction })
+            },
+            "CopyModePageScroll" => {
+                let direction = Direction::from_str(string.as_str()).map_err(|_| {
+                    ConfigError::new_kdl_error(
+                        format!("Invalid direction: '{}'", string),
+                        action_node.span().offset(),
+                        action_node.span().len(),
+                    )
+                })?;
+                Ok(Action::CopyModePageScroll { direction })
+            },
+            "CopyModeHalfPageScroll" => {
+                let direction = Direction::from_str(string.as_str()).map_err(|_| {
+                    ConfigError::new_kdl_error(
+                        format!("Invalid direction: '{}'", string),
+                        action_node.span().offset(),
+                        action_node.span().len(),
+                    )
+                })?;
+                Ok(Action::CopyModeHalfPageScroll { direction })
             },
             "MoveFocusOrTab" => {
                 let direction = Direction::from_str(string.as_str()).map_err(|_| {
@@ -1243,6 +1281,47 @@ impl Action {
                 Some(node)
             },
             Action::Copy => Some(KdlNode::new("Copy")),
+            Action::ToggleCopyMode => Some(KdlNode::new("ToggleCopyMode")),
+            Action::CopyModeMove { direction } => {
+                let mut node = KdlNode::new("CopyModeMove");
+                let direction = match direction {
+                    Direction::Left => "left",
+                    Direction::Right => "right",
+                    Direction::Up => "up",
+                    Direction::Down => "down",
+                };
+                node.push(direction);
+                Some(node)
+            },
+            Action::CopyModePageScroll { direction } => {
+                let mut node = KdlNode::new("CopyModePageScroll");
+                let direction = match direction {
+                    Direction::Left => "left",
+                    Direction::Right => "right",
+                    Direction::Up => "up",
+                    Direction::Down => "down",
+                };
+                node.push(direction);
+                Some(node)
+            },
+            Action::CopyModeHalfPageScroll { direction } => {
+                let mut node = KdlNode::new("CopyModeHalfPageScroll");
+                let direction = match direction {
+                    Direction::Left => "left",
+                    Direction::Right => "right",
+                    Direction::Up => "up",
+                    Direction::Down => "down",
+                };
+                node.push(direction);
+                Some(node)
+            },
+            Action::CopyModeLineStart => Some(KdlNode::new("CopyModeLineStart")),
+            Action::CopyModeLineEnd => Some(KdlNode::new("CopyModeLineEnd")),
+            Action::CopyModeWordStart => Some(KdlNode::new("CopyModeWordStart")),
+            Action::CopyModeWordEnd => Some(KdlNode::new("CopyModeWordEnd")),
+            Action::CopyModeWordBack => Some(KdlNode::new("CopyModeWordBack")),
+            Action::CopyModeYank => Some(KdlNode::new("CopyModeYank")),
+            Action::CopyModeCancel => Some(KdlNode::new("CopyModeCancel")),
             Action::SearchInput { input: bytes } => {
                 let mut node = KdlNode::new("SearchInput");
                 for byte in bytes {
@@ -1691,6 +1770,45 @@ impl TryFrom<(&KdlNode, &Options)> for Action {
                 })
             },
             "Copy" => parse_kdl_action_arguments!(action_name, action_arguments, kdl_action),
+            "ToggleCopyMode" => {
+                parse_kdl_action_arguments!(action_name, action_arguments, kdl_action)
+            },
+            "CopyModeLineStart" => {
+                parse_kdl_action_arguments!(action_name, action_arguments, kdl_action)
+            },
+            "CopyModeLineEnd" => {
+                parse_kdl_action_arguments!(action_name, action_arguments, kdl_action)
+            },
+            "CopyModeWordStart" => {
+                parse_kdl_action_arguments!(action_name, action_arguments, kdl_action)
+            },
+            "CopyModeWordEnd" => {
+                parse_kdl_action_arguments!(action_name, action_arguments, kdl_action)
+            },
+            "CopyModeWordBack" => {
+                parse_kdl_action_arguments!(action_name, action_arguments, kdl_action)
+            },
+            "CopyModeYank" => {
+                parse_kdl_action_arguments!(action_name, action_arguments, kdl_action)
+            },
+            "CopyModeCancel" => {
+                parse_kdl_action_arguments!(action_name, action_arguments, kdl_action)
+            },
+            "CopyModeMove" => parse_kdl_action_char_or_string_arguments!(
+                action_name,
+                action_arguments,
+                kdl_action
+            ),
+            "CopyModePageScroll" => parse_kdl_action_char_or_string_arguments!(
+                action_name,
+                action_arguments,
+                kdl_action
+            ),
+            "CopyModeHalfPageScroll" => parse_kdl_action_char_or_string_arguments!(
+                action_name,
+                action_arguments,
+                kdl_action
+            ),
             "Clear" => parse_kdl_action_arguments!(action_name, action_arguments, kdl_action),
             "Confirm" => parse_kdl_action_arguments!(action_name, action_arguments, kdl_action),
             "Deny" => parse_kdl_action_arguments!(action_name, action_arguments, kdl_action),
@@ -2785,6 +2903,11 @@ impl Options {
                 .map(|(scroll_buffer_size, _entry)| scroll_buffer_size as usize);
         let copy_command = kdl_property_first_arg_as_string_or_error!(kdl_options, "copy_command")
             .map(|(copy_command, _entry)| copy_command.to_string());
+        let ime_switch_command =
+            kdl_property_first_arg_as_string_or_error!(kdl_options, "ime_switch_command")
+                .map(|(cmd, _entry)| cmd.to_string());
+        let ime_english = kdl_property_first_arg_as_string_or_error!(kdl_options, "ime_english")
+            .map(|(layout, _entry)| layout.to_string());
         let copy_clipboard =
             match kdl_property_first_arg_as_string_or_error!(kdl_options, "copy_clipboard") {
                 Some((string, entry)) => Some(Clipboard::from_str(string).map_err(|_| {
@@ -2983,6 +3106,8 @@ impl Options {
             on_force_close,
             scroll_buffer_size,
             copy_command,
+            ime_switch_command,
+            ime_english,
             copy_clipboard,
             copy_on_select,
             osc8_hyperlinks,
@@ -3567,6 +3692,20 @@ impl Options {
         } else {
             None
         }
+    }
+    fn ime_switch_command_to_kdl(&self, _add_comments: bool) -> Option<KdlNode> {
+        self.ime_switch_command.as_ref().map(|cmd| {
+            let mut node = KdlNode::new("ime_switch_command");
+            node.push(cmd.to_owned());
+            node
+        })
+    }
+    fn ime_english_to_kdl(&self, _add_comments: bool) -> Option<KdlNode> {
+        self.ime_english.as_ref().map(|layout| {
+            let mut node = KdlNode::new("ime_english");
+            node.push(layout.to_owned());
+            node
+        })
     }
     fn copy_clipboard_to_kdl(&self, add_comments: bool) -> Option<KdlNode> {
         let comment_text = format!("{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}",
@@ -4692,6 +4831,12 @@ impl Options {
         }
         if let Some(copy_command) = self.copy_command_to_kdl(add_comments) {
             nodes.push(copy_command);
+        }
+        if let Some(ime_switch_command) = self.ime_switch_command_to_kdl(add_comments) {
+            nodes.push(ime_switch_command);
+        }
+        if let Some(ime_english) = self.ime_english_to_kdl(add_comments) {
+            nodes.push(ime_english);
         }
         if let Some(copy_clipboard) = self.copy_clipboard_to_kdl(add_comments) {
             nodes.push(copy_clipboard);
