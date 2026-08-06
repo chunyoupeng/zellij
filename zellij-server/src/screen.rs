@@ -5607,6 +5607,14 @@ impl Screen {
 
         self.style = mode_info.style;
         self.mode_info.insert(client_id, mode_info.clone());
+        // Keep the server-thread keybind mode map in sync. Keys are interpreted
+        // against `SessionMetaData.current_input_modes`, not Screen.mode_info —
+        // without this, Screen-driven exits (bottom buffer / per-pane restore)
+        // update the frame color but leave keybinds stuck in the old mode.
+        let _ = self
+            .bus
+            .senders
+            .send_to_server(ServerInstruction::SyncClientInputMode(client_id, new_mode));
         for tab in self.tabs.values_mut() {
             tab.change_mode_info(mode_info.clone(), client_id);
             tab.mark_active_pane_for_rerender(client_id);

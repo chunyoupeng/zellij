@@ -116,6 +116,10 @@ pub enum ServerInstruction {
     },
     DisconnectAllClientsExcept(ClientId),
     ChangeMode(ClientId, InputMode, Option<NotificationEnd>),
+    /// Screen-driven mode changes (e.g. bottom-buffer exit, per-pane restore)
+    /// must keep the server-side keybind mode map in sync. Unlike `ChangeMode`,
+    /// this does not round-trip another ScreenInstruction.
+    SyncClientInputMode(ClientId, InputMode),
     ChangeModeForAllClients(InputMode),
     Reconfigure {
         client_id: ClientId,
@@ -171,6 +175,7 @@ impl From<&ServerInstruction> for ServerContext {
                 ServerContext::DisconnectAllClientsExcept
             },
             ServerInstruction::ChangeMode(..) => ServerContext::ChangeMode,
+            ServerInstruction::SyncClientInputMode(..) => ServerContext::ChangeMode,
             ServerInstruction::ChangeModeForAllClients(..) => {
                 ServerContext::ChangeModeForAllClients
             },
@@ -1710,6 +1715,13 @@ pub fn start_server_impl(
                         completion,
                     ))
                     .unwrap();
+            },
+            ServerInstruction::SyncClientInputMode(client_id, input_mode) => {
+                if let Some(session_data) = session_data.write().unwrap().as_mut() {
+                    session_data
+                        .current_input_modes
+                        .insert(client_id, input_mode);
+                }
             },
             ServerInstruction::ChangeModeForAllClients(input_mode) => {
                 session_data
