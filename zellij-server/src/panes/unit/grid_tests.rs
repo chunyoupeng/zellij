@@ -8342,3 +8342,97 @@ fn xtsmgraphics_geometry_reports_failure_when_host_does_not_support_sixel() {
     vte_parser.advance(&mut grid, b"\x1b[?2;1S");
     assert_eq!(grid.pending_messages_to_pty, vec![b"\x1b[?2;3;0S".to_vec()]);
 }
+
+#[test]
+fn kitty_keyboard_protocol_push_and_pop() {
+    let mut grid = create_grid_with_content("");
+    let mut vte_parser = vte::Parser::new();
+    vte_parser.advance(&mut grid, b"\x1b[>1u");
+    assert!(grid.supports_kitty_keyboard_protocol());
+    vte_parser.advance(&mut grid, b"\x1b[>0u");
+    assert!(
+        !grid.supports_kitty_keyboard_protocol(),
+        "nested push with zero flags should disable the protocol"
+    );
+    vte_parser.advance(&mut grid, b"\x1b[<u");
+    assert!(
+        grid.supports_kitty_keyboard_protocol(),
+        "popping the nested entry should restore the outer app's flags"
+    );
+    vte_parser.advance(&mut grid, b"\x1b[<u");
+    assert!(!grid.supports_kitty_keyboard_protocol());
+}
+
+#[test]
+fn kitty_keyboard_protocol_pop_multiple_entries_at_once() {
+    let mut grid = create_grid_with_content("");
+    let mut vte_parser = vte::Parser::new();
+    vte_parser.advance(&mut grid, b"\x1b[>1u\x1b[>1u\x1b[<2u");
+    assert!(!grid.supports_kitty_keyboard_protocol());
+}
+
+#[test]
+fn kitty_keyboard_protocol_pop_beyond_stack_bottom_disables() {
+    let mut grid = create_grid_with_content("");
+    let mut vte_parser = vte::Parser::new();
+    vte_parser.advance(&mut grid, b"\x1b[>1u\x1b[<5u");
+    assert!(!grid.supports_kitty_keyboard_protocol());
+    vte_parser.advance(&mut grid, b"\x1b[<u"); // popping an empty stack should be a no-op
+    assert!(!grid.supports_kitty_keyboard_protocol());
+}
+
+#[test]
+fn kitty_keyboard_protocol_set_flag_modes() {
+    let mut grid = create_grid_with_content("");
+    let mut vte_parser = vte::Parser::new();
+    vte_parser.advance(&mut grid, b"\x1b[=1;1u"); // mode 1: assign
+    assert!(grid.supports_kitty_keyboard_protocol());
+    vte_parser.advance(&mut grid, b"\x1b[=1;3u"); // mode 3: clear given bits
+    assert!(!grid.supports_kitty_keyboard_protocol());
+    vte_parser.advance(&mut grid, b"\x1b[=1;2u"); // mode 2: set given bits
+    assert!(grid.supports_kitty_keyboard_protocol());
+    vte_parser.advance(&mut grid, b"\x1b[=0u"); // omitted mode defaults to assign
+    assert!(!grid.supports_kitty_keyboard_protocol());
+}
+
+#[test]
+fn kitty_keyboard_protocol_query_reports_current_state() {
+    let mut grid = create_grid_with_content("");
+    let mut vte_parser = vte::Parser::new();
+    vte_parser.advance(&mut grid, b"\x1b[?u");
+    vte_parser.advance(&mut grid, b"\x1b[>1u\x1b[?u");
+    assert_eq!(
+        grid.pending_messages_to_pty,
+        vec![b"\x1b[?0u".to_vec(), b"\x1b[?1u".to_vec()]
+    );
+}
+
+#[test]
+fn osc_133_prompt_start_resets_kitty_keyboard_protocol() {
+    let mut grid = create_grid_with_content("");
+    let mut vte_parser = vte::Parser::new();
+    // an app enables the protocol (twice, so state also lives on the stack)
+    // and exits without popping; the shell then draws its prompt
+    vte_parser.advance(&mut grid, b"\x1b[>1u\x1b[>1u");
+    assert!(grid.supports_kitty_keyboard_protocol());
+    vte_parser.advance(&mut grid, b"\x1b]133;A\x1b\\");
+    assert!(
+        !grid.supports_kitty_keyboard_protocol(),
+        "prompt start should clear dangling kitty keyboard state"
+    );
+    vte_parser.advance(&mut grid, b"\x1b[<u"); // the stack should be gone too
+    assert!(!grid.supports_kitty_keyboard_protocol());
+}
+
+#[test]
+fn alternate_screen_keeps_separate_kitty_keyboard_state() {
+    let mut grid = create_grid_with_content("");
+    let mut vte_parser = vte::Parser::new();
+    vte_parser.advance(&mut grid, b"\x1b[?1049h\x1b[>1u");
+    assert!(grid.supports_kitty_keyboard_protocol());
+    vte_parser.advance(&mut grid, b"\x1b[?1049l");
+    assert!(
+        !grid.supports_kitty_keyboard_protocol(),
+        "leaving the alternate screen should restore the main screen's kitty keyboard state"
+    );
+}

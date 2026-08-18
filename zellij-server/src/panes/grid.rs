@@ -735,7 +735,8 @@ pub struct Grid {
     arrow_fonts: bool,
     styled_underlines: bool,
     osc8_hyperlinks: bool,
-    pub supports_kitty_keyboard_protocol: bool, // has the app requested kitty keyboard support?
+    kitty_keyboard_state: KittyKeyboardState, // kitty keyboard protocol flags + push/pop stack,
+    // as requested by the app in this pane
     explicitly_disable_kitty_keyboard_protocol: bool, // has kitty keyboard support been explicitly
     // disabled by user config?
     click: Click,
@@ -756,6 +757,9 @@ pub struct Grid {
 }
 
 impl Grid {
+    pub fn supports_kitty_keyboard_protocol(&self) -> bool {
+        self.kitty_keyboard_state.is_enabled()
+    }
     pub fn set_pane_default_colors(&mut self, fg: Option<String>, bg: Option<String>) {
         // Parse inputs; anything that isn't literal RGB (palette
         // index / named colour / parse failure) is silently dropped so
@@ -1087,7 +1091,7 @@ impl Grid {
             styled_underlines,
             osc8_hyperlinks,
             lock_renders: false,
-            supports_kitty_keyboard_protocol: false,
+            kitty_keyboard_state: KittyKeyboardState::default(),
             explicitly_disable_kitty_keyboard_protocol,
             click: Click::default(),
             hyperlink_tracker: HyperlinkTracker::new(),
@@ -2608,7 +2612,7 @@ impl Grid {
         self.mouse_tracking = MouseTracking::Off;
         self.focus_event_tracking = false;
         self.cursor_is_hidden = false;
-        self.supports_kitty_keyboard_protocol = false;
+        self.kitty_keyboard_state.reset();
         self.set_scroll_region_to_viewport_size();
         self.pane_default_fg = None;
         self.pane_default_bg = None;
@@ -4153,6 +4157,18 @@ impl Perform for Grid {
                 })
             },
 
+            // Shell integration prompt marks (FinalTerm / OSC 133). A prompt
+            // start ("A") means a shell is reading input again, so any kitty
+            // keyboard state left behind by an app that exited without popping
+            // it would garble keys at the prompt (eg. "8;5u" appearing when
+            // pressing Ctrl-b). Reset it - kitty itself does the same through
+            // its shell integration.
+            b"133" => {
+                if params.get(1).map(|param| param.first()) == Some(Some(&b'A')) {
+                    self.kitty_keyboard_state.reset();
+                }
+            },
+
             // Get/set Foreground (b"10") or background (b"11") colors
             b"10" | b"11" => {
                 if params.len() >= 2 {
@@ -4463,7 +4479,7 @@ impl Perform for Grid {
                                     &mut self.cursor,
                                     &mut self.sixel_grid,
                                     &mut self.kitty_grid,
-                                    &mut self.supports_kitty_keyboard_protocol,
+                                    &mut self.kitty_keyboard_state,
                                 );
                             }
                             self.alternate_screen_state = None;
@@ -4562,9 +4578,9 @@ impl Perform for Grid {
                                 &mut self.cursor,
                                 Cursor::new(0, 0, self.styled_underlines),
                             );
-                            let current_supports_kitty_keyboard_protocol = std::mem::replace(
-                                &mut self.supports_kitty_keyboard_protocol,
-                                false,
+                            let current_kitty_keyboard_state = std::mem::replace(
+                                &mut self.kitty_keyboard_state,
+                                KittyKeyboardState::default(),
                             );
                             let sixel_image_store = self.sixel_grid.sixel_image_store.clone();
                             let alternate_sixelgrid = std::mem::replace(
@@ -4582,7 +4598,7 @@ impl Perform for Grid {
                                 current_cursor,
                                 alternate_sixelgrid,
                                 alternate_kittygrid,
-                                current_supports_kitty_keyboard_protocol,
+                                current_kitty_keyboard_state,
                             ));
                             self.clear_viewport_before_rendering = true;
                             self.scrollback_buffer_lines =
@@ -4789,42 +4805,47 @@ impl Perform for Grid {
         } else if c == 's' {
             self.save_cursor_position();
         } else if c == 'u' && intermediates == &[b'>'] {
-            // Zellij only supports the first "progressive enhancement" layer of the kitty keyboard
-            // protocol
-            // 0 disables, everything else enables.
-            let count = next_param_or(0);
+            // kitty keyboard protocol push: save the current flags on the stack and
+            // set the given ones. Zellij only honors the first "progressive
+            // enhancement" layer when encoding keys, but tracks the full stack so
+            // that nested apps (eg. a TUI inside nvim's :term) restore each
+            // other's state correctly.
+            let flags = params
+                .iter()
+                .next()
+                .map(|param| param[0])
+                .unwrap_or(0)
+                .min(u8::MAX as u16) as u8;
             if !self.explicitly_disable_kitty_keyboard_protocol {
-                if count > 0 {
-                    self.supports_kitty_keyboard_protocol = true;
-                } else {
-                    self.supports_kitty_keyboard_protocol = false;
-                }
+                self.kitty_keyboard_state.push(flags);
             }
         } else if c == 'u' && intermediates == &[b'<'] {
-            // Zellij only supports the first "progressive enhancement" layer of the kitty keyboard
-            // protocol
+            // kitty keyboard protocol pop (the parameter is the number of entries to pop)
+            let count = next_param_or(1);
             if !self.explicitly_disable_kitty_keyboard_protocol {
-                self.supports_kitty_keyboard_protocol = false;
+                self.kitty_keyboard_state.pop(count);
             }
         } else if c == 'u' && intermediates == &[b'?'] {
-            // Zellij only supports the first "progressive enhancement" layer of the kitty keyboard
-            // protocol
-            let reply = if self.supports_kitty_keyboard_protocol {
+            // kitty keyboard protocol query; Zellij only supports the first
+            // "progressive enhancement" layer, so that is what we report when enabled
+            let reply = if self.kitty_keyboard_state.is_enabled() {
                 "\u{1b}[?1u"
             } else {
                 "\u{1b}[?0u"
             };
             self.pending_messages_to_pty.push(reply.as_bytes().to_vec());
         } else if c == 'u' && intermediates == &[b'='] {
-            // kitty keyboard protocol without the stack, just setting.
-            // 0 disables, everything else enables.
-            let count = next_param_or(0);
+            // kitty keyboard protocol without the stack, setting the current flags
+            // in place (mode 1 => assign, 2 => set given bits, 3 => clear given bits)
+            let mut params_iter = params.iter();
+            let flags = params_iter
+                .next()
+                .map(|param| param[0])
+                .unwrap_or(0)
+                .min(u8::MAX as u16) as u8;
+            let mode = params_iter.next().map(|param| param[0]).unwrap_or(1);
             if !self.explicitly_disable_kitty_keyboard_protocol {
-                if count > 0 {
-                    self.supports_kitty_keyboard_protocol = true;
-                } else {
-                    self.supports_kitty_keyboard_protocol = false;
-                }
+                self.kitty_keyboard_state.set(flags, mode);
             }
         } else if c == 'u' {
             self.restore_cursor_position();
@@ -5102,6 +5123,53 @@ impl Perform for Grid {
     }
 }
 
+// the kitty keyboard protocol has a terminal-side stack of "progressive
+// enhancement" flags: CSI > flags u pushes the current flags and sets new
+// ones, CSI < n u pops n entries, CSI = flags ; mode u modifies the current
+// flags in place. The main and alternate screens each have their own state
+// (swapped via AlternateScreenState).
+const KITTY_KEYBOARD_STACK_LIMIT: usize = 64; // same order of magnitude as kitty itself; evicts
+                                              // oldest on overflow so a misbehaving app can't grow
+                                              // this unboundedly
+
+#[derive(Clone, Debug, Default)]
+pub struct KittyKeyboardState {
+    current_flags: u8,
+    stack: Vec<u8>,
+}
+impl KittyKeyboardState {
+    pub fn push(&mut self, flags: u8) {
+        if self.stack.len() >= KITTY_KEYBOARD_STACK_LIMIT {
+            self.stack.remove(0);
+        }
+        self.stack.push(self.current_flags);
+        self.current_flags = flags;
+    }
+    pub fn pop(&mut self, count: usize) {
+        // popping more entries than were pushed empties the stack and turns
+        // the protocol off, per the kitty spec
+        for _ in 0..count {
+            self.current_flags = self.stack.pop().unwrap_or(0);
+        }
+    }
+    pub fn set(&mut self, flags: u8, mode: u16) {
+        match mode {
+            2 => self.current_flags |= flags,
+            3 => self.current_flags &= !flags,
+            _ => self.current_flags = flags,
+        }
+    }
+    pub fn is_enabled(&self) -> bool {
+        // Zellij only implements the first enhancement layer, so any non-zero
+        // flags mean "encode keys as kitty"
+        self.current_flags > 0
+    }
+    pub fn reset(&mut self) {
+        self.current_flags = 0;
+        self.stack.clear();
+    }
+}
+
 #[derive(Clone)]
 pub struct AlternateScreenState {
     lines_above: VecDeque<Row>,
@@ -5109,7 +5177,7 @@ pub struct AlternateScreenState {
     cursor: Cursor,
     sixel_grid: SixelGrid,
     kitty_grid: KittyGrid,
-    supports_kitty_keyboard_protocol: bool,
+    kitty_keyboard_state: KittyKeyboardState,
 }
 impl AlternateScreenState {
     pub fn new(
@@ -5118,7 +5186,7 @@ impl AlternateScreenState {
         cursor: Cursor,
         sixel_grid: SixelGrid,
         kitty_grid: KittyGrid,
-        supports_kitty_keyboard_protocol: bool,
+        kitty_keyboard_state: KittyKeyboardState,
     ) -> Self {
         AlternateScreenState {
             lines_above,
@@ -5126,7 +5194,7 @@ impl AlternateScreenState {
             cursor,
             sixel_grid,
             kitty_grid,
-            supports_kitty_keyboard_protocol,
+            kitty_keyboard_state,
         }
     }
     pub fn apply_contents_to(
@@ -5136,17 +5204,14 @@ impl AlternateScreenState {
         cursor: &mut Cursor,
         sixel_grid: &mut SixelGrid,
         kitty_grid: &mut KittyGrid,
-        supports_kitty_keyboard_protocol: &mut bool,
+        kitty_keyboard_state: &mut KittyKeyboardState,
     ) {
         std::mem::swap(&mut self.lines_above, lines_above);
         std::mem::swap(&mut self.viewport, viewport);
         std::mem::swap(&mut self.cursor, cursor);
         std::mem::swap(&mut self.sixel_grid, sixel_grid);
         std::mem::swap(&mut self.kitty_grid, kitty_grid);
-        std::mem::swap(
-            &mut self.supports_kitty_keyboard_protocol,
-            supports_kitty_keyboard_protocol,
-        );
+        std::mem::swap(&mut self.kitty_keyboard_state, kitty_keyboard_state);
     }
 }
 
