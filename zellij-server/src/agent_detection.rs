@@ -47,6 +47,7 @@ const KNOWN_AGENTS: &[&str] = &[
     "grok",
     "qwen",
     "agy",
+    "pi",
 ];
 
 /// Interpreters and launchers that may wrap an agent binary; when argv[0] is
@@ -139,6 +140,10 @@ mod tests {
         assert_eq!(
             agent_name_from_cmd(&cmd(&["/opt/homebrew/bin/codex"])),
             Some("codex".into())
+        );
+        assert_eq!(
+            agent_name_from_cmd(&cmd(&["pi", "--continue"])),
+            Some("pi".into())
         );
     }
 
