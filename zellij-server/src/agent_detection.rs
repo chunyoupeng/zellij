@@ -54,7 +54,7 @@ const KNOWN_AGENTS: &[&str] = &[
 /// one of these, the agent name is searched for in the following arguments.
 const WRAPPERS: &[&str] = &[
     "node", "bun", "deno", "python", "python3", "uv", "uvx", "npx", "pnpm", "npm", "yarn", "env",
-    "sh", "bash", "zsh", "fish",
+    "sh", "bash", "zsh", "fish", "tsx",
 ];
 
 fn basename(cmd_part: &str) -> &str {
@@ -69,13 +69,26 @@ fn basename(cmd_part: &str) -> &str {
     base
 }
 
+fn is_pi_entrypoint(cmd_part: &str) -> bool {
+    let normalized = cmd_part.replace('\\', "/").to_ascii_lowercase();
+    let is_coding_agent_package =
+        normalized.contains("packages/coding-agent/") || normalized.contains("pi-coding-agent/");
+    let is_cli_entrypoint = normalized.ends_with("src/cli.ts")
+        || normalized.ends_with("dist/cli.js")
+        || normalized.ends_with("dist/bun/cli.js");
+    is_coding_agent_package && is_cli_entrypoint
+}
+
 /// Maps a command line (argv) to a known agent name, looking through common
 /// interpreter/launcher wrappers (eg. `node /path/to/claude`).
 pub fn agent_name_from_cmd(cmd: &[String]) -> Option<String> {
-    for (i, part) in cmd.iter().take(4).enumerate() {
+    for (i, part) in cmd.iter().enumerate() {
         let base = basename(part).to_ascii_lowercase();
         if KNOWN_AGENTS.contains(&base.as_str()) {
             return Some(base);
+        }
+        if is_pi_entrypoint(part) {
+            return Some("pi".to_owned());
         }
         if i == 0 && !WRAPPERS.contains(&base.as_str()) {
             // argv[0] is neither an agent nor a wrapper - a shell or an
@@ -119,7 +132,9 @@ pub fn text_indicates_blocked(viewport_text: &str) -> bool {
         .take(BLOCKED_SCAN_LINES)
         .any(|line| {
             let line = line.to_ascii_lowercase();
-            BLOCKED_PATTERNS.iter().any(|pattern| line.contains(pattern))
+            BLOCKED_PATTERNS
+                .iter()
+                .any(|pattern| line.contains(pattern))
         })
 }
 
@@ -160,9 +175,37 @@ mod tests {
     }
 
     #[test]
+    fn detects_pi_entrypoint_under_node_and_tsx() {
+        assert_eq!(
+            agent_name_from_cmd(&cmd(&[
+                "node",
+                "/workspace/pi/node_modules/.bin/tsx",
+                "--tsconfig",
+                "/workspace/pi/tsconfig.json",
+                "/workspace/pi/packages/coding-agent/src/cli.ts",
+            ])),
+            Some("pi".into())
+        );
+        assert_eq!(
+            agent_name_from_cmd(&cmd(&[
+                "node",
+                "/usr/lib/node_modules/@earendil-works/pi-coding-agent/dist/cli.js",
+            ])),
+            Some("pi".into())
+        );
+    }
+
+    #[test]
     fn ignores_shells_and_unrelated_programs() {
         assert_eq!(agent_name_from_cmd(&cmd(&["/bin/zsh"])), None);
         assert_eq!(agent_name_from_cmd(&cmd(&["vim", "claude.md"])), None);
+        assert_eq!(
+            agent_name_from_cmd(&cmd(&[
+                "node",
+                "/workspace/pi/packages/coding-agent/src/rpc-entry.ts",
+            ])),
+            None
+        );
         assert_eq!(agent_name_from_cmd(&cmd(&[])), None);
     }
 

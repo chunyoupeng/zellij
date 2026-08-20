@@ -2950,8 +2950,7 @@ impl Grid {
     /// double/triple-click word/line selections.
     pub fn set_selection_range(&mut self, start: &Position, end: &Position) {
         let old_selection = self.selection;
-        self.selection
-            .set_start_and_end_positions(*start, *end);
+        self.selection.set_start_and_end_positions(*start, *end);
         self.update_selected_lines(&old_selection, &self.selection.clone());
         self.mark_for_rerender();
     }
