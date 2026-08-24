@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 
 ## [Unreleased]
+* fix: nested-session detection over SSH (https://github.com/zellij-org/zellij/pull/5522)
+* fix: some issues with notification parsing (eg. neovim notification on save) (https://github.com/zellij-org/zellij/pull/5523)
+* fix: kitty image size on startup and clearing with stacked unlisted full framed panes (https://github.com/zellij-org/zellij/pull/5526)
+* fix: focus event in remote attach (https://github.com/zellij-org/zellij/pull/5527)
+* fix: editing scrollback issue with a fullscreen floating pane (https://github.com/zellij-org/zellij/pull/5528)
+
+## [0.45.0] - 2026-08-20
 * feat: allow tabs to have different sizes if clients aren't focused on the same one (https://github.com/zellij-org/zellij/pull/5133)
 * feat: PWA support for the web client (manifest + icons + iOS meta tags) so the page can be installed as a standalone app (https://github.com/zellij-org/zellij/pull/5184)
 * feat: mobile UI (https://github.com/zellij-org/zellij/pull/5241)

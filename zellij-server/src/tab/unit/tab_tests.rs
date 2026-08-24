@@ -2244,6 +2244,119 @@ pub fn opening_scrollback_editor_on_fullscreen_pane_retargets_fullscreen() {
 }
 
 #[test]
+pub fn opening_scrollback_editor_on_fullscreen_floating_pane_retargets_fullscreen() {
+    let client_id = 1;
+    let mut tab = create_tab_with_two_floating_panes();
+    let viewport = *tab.viewport.borrow();
+    let active_pane_id = tab
+        .floating_panes
+        .active_pane_id(client_id)
+        .expect("a floating pane is focused");
+    let original_geom = tab
+        .floating_panes
+        .get(&active_pane_id)
+        .expect("focused floating pane exists")
+        .position_and_size();
+
+    tab.toggle_active_pane_fullscreen(client_id);
+    assert_eq!(
+        tab.floating_panes.fullscreen_pane_id(),
+        Some(active_pane_id),
+        "fullscreen tracks the original floating pane",
+    );
+
+    let editor_pane_id = PaneId::Terminal(99);
+    tab.replace_active_pane_with_editor_pane(editor_pane_id, client_id)
+        .unwrap();
+    assert_eq!(
+        tab.floating_panes.fullscreen_pane_id(),
+        Some(editor_pane_id),
+        "fullscreen now tracks the editor pane id, not the suppressed one",
+    );
+    let editor_geom = floating_pane_geom(&tab, editor_pane_id);
+    assert_eq!(
+        editor_geom.cols.as_usize(),
+        viewport.cols,
+        "the editor pane covers the viewport cols",
+    );
+    assert_eq!(
+        editor_geom.rows.as_usize(),
+        viewport.rows,
+        "the editor pane covers the viewport rows",
+    );
+
+    tab.toggle_active_pane_fullscreen(client_id);
+    assert!(
+        !tab.floating_panes.fullscreen_is_active(),
+        "fullscreen is cleared after the second toggle",
+    );
+    let editor_pane = tab
+        .floating_panes
+        .get(&editor_pane_id)
+        .expect("editor pane is present in floating panes");
+    assert!(
+        editor_pane.geom_override().is_none(),
+        "editor pane no longer carries the fullscreen geom_override",
+    );
+    assert_eq!(
+        editor_pane.position_and_size(),
+        original_geom,
+        "editor pane falls back to the replaced pane's original geometry",
+    );
+}
+
+#[test]
+pub fn closing_fullscreen_floating_scrollback_editor_restores_geometry() {
+    let client_id = 1;
+    let mut tab = create_tab_with_two_floating_panes();
+    let active_pane_id = tab
+        .floating_panes
+        .active_pane_id(client_id)
+        .expect("a floating pane is focused");
+    let original_geom = tab
+        .floating_panes
+        .get(&active_pane_id)
+        .expect("focused floating pane exists")
+        .position_and_size();
+
+    let editor_pane_id = PaneId::Terminal(99);
+    tab.replace_active_pane_with_editor_pane(editor_pane_id, client_id)
+        .unwrap();
+    tab.toggle_active_pane_fullscreen(client_id);
+    assert_eq!(
+        tab.floating_panes.fullscreen_pane_id(),
+        Some(editor_pane_id),
+        "fullscreen tracks the editor pane",
+    );
+
+    tab.close_pane(editor_pane_id, false, None);
+    assert_eq!(
+        tab.floating_panes.fullscreen_pane_id(),
+        Some(active_pane_id),
+        "fullscreen now tracks the restored suppressed pane",
+    );
+
+    tab.toggle_active_pane_fullscreen(client_id);
+    assert!(
+        !tab.floating_panes.fullscreen_is_active(),
+        "fullscreen is cleared after the second toggle",
+    );
+    let restored_pane = tab
+        .floating_panes
+        .get(&active_pane_id)
+        .expect("restored pane is present");
+    assert!(
+        restored_pane.geom_override().is_none(),
+        "restored pane no longer carries the fullscreen geom_override",
+    );
+    assert_eq!(
+        restored_pane.position_and_size(),
+        original_geom,
+        "restored pane is back to its original geometry",
+    );
+}
+
+#[test]
 fn switch_to_next_pane_fullscreen() {
     let size = Size {
         cols: 121,
