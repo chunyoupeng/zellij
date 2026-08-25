@@ -10,6 +10,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 * fix: kitty image size on startup and clearing with stacked unlisted full framed panes (https://github.com/zellij-org/zellij/pull/5526)
 * fix: focus event in remote attach (https://github.com/zellij-org/zellij/pull/5527)
 * fix: editing scrollback issue with a fullscreen floating pane (https://github.com/zellij-org/zellij/pull/5528)
+* feat: allow opting-out of scroll mode sync (https://github.com/zellij-org/zellij/pull/5532)
+* fix: save space for title row in fixed-layout panes in titles only mode (https://github.com/zellij-org/zellij/pull/5533)
 
 ## [0.45.0] - 2026-08-20
 * feat: allow tabs to have different sizes if clients aren't focused on the same one (https://github.com/zellij-org/zellij/pull/5133)
