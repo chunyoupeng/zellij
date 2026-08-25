@@ -83,6 +83,16 @@ pub fn install(sh: &Shell, flags: flags::Install) -> anyhow::Result<()> {
     })
     .with_context(err_context)?;
 
+    // Sign the release binary before copying it. On macOS, an unsigned or stale ad-hoc
+    // signature can cause the kernel to terminate the installed binary with SIGKILL.
+    let binary = crate::target_dir().join("release").join("zellij");
+    if cfg!(target_os = "macos") {
+        cmd!(sh, "codesign --force --sign -")
+            .arg(&binary)
+            .run()
+            .context("failed to sign zellij binary")?;
+    }
+
     // Copy binary to destination
     let destination = if flags.destination.is_absolute() {
         flags.destination.clone()
@@ -92,11 +102,7 @@ pub fn install(sh: &Shell, flags: flags::Install) -> anyhow::Result<()> {
             .join(&flags.destination)
     };
     sh.change_dir(crate::project_root());
-    sh.copy_file(
-        crate::target_dir().join("release").join("zellij"),
-        &destination,
-    )
-    .with_context(err_context)
+    sh.copy_file(binary, &destination).with_context(err_context)
 }
 
 /// Run zellij debug build.
