@@ -7966,6 +7966,18 @@ pub(crate) fn screen_thread_main(
                     | ClientTabIndexOrPaneId::ClientIdNoFocus(client_id) => {
                         let should_focus_pane =
                             matches!(client_or_tab_index, ClientTabIndexOrPaneId::ClientId(_));
+                        // When the new pane takes focus (the ClientId variant), report the
+                        // focus change to the server so per-pane modes are restored. This
+                        // covers the async spawn path (eg. ToggleFloatingPanes when no
+                        // floating pane exists yet), where a fresh pane is focused without
+                        // any of the existing Toggle/Show/Hide reports: without it the new
+                        // pane inherits the previous pane's Search/Scroll mode instead of
+                        // starting in Normal.
+                        let old_pane_id = if should_focus_pane {
+                            screen.get_active_pane_id(&client_id)
+                        } else {
+                            None
+                        };
                         active_tab_and_connected_client_id_with_first_tab_fallback!(screen, client_id, |tab: &mut Tab, client_id: Option<ClientId>| {
                             tab.new_pane(pid,
                                initial_pane_title,
@@ -7989,6 +8001,12 @@ pub(crate) fn screen_thread_main(
                                     hold_for_command
                                 )
                             )
+                        }
+                        if should_focus_pane {
+                            let new_pane_id = screen.get_active_pane_id(&client_id);
+                            if let (Some(old), Some(new)) = (old_pane_id, new_pane_id) {
+                                screen.report_key_passthrough_state(client_id, old, new);
+                            }
                         }
                     },
                     ClientTabIndexOrPaneId::TabIndex(tab_index)
@@ -8159,8 +8177,13 @@ pub(crate) fn screen_thread_main(
                 screen.render(None)?;
             },
             ScreenInstruction::ToggleFloatingPanes(client_id, default_shell, completion_tx) => {
+                let old_pane_id = screen.get_active_pane_id(&client_id);
                 active_tab_and_connected_client_id!(screen, client_id, |tab: &mut Tab, client_id: ClientId| tab
                     .toggle_floating_panes(Some(client_id), default_shell, completion_tx), ?);
+                let new_pane_id = screen.get_active_pane_id(&client_id);
+                if let (Some(old), Some(new)) = (old_pane_id, new_pane_id) {
+                    screen.report_key_passthrough_state(client_id, old, new);
+                }
                 screen.clear_bell_for_focused_pane(client_id);
                 screen.log_and_report_session_state()?;
 
@@ -8171,7 +8194,12 @@ pub(crate) fn screen_thread_main(
                 tab_id,
                 completion,
             } => {
+                let old_pane_id = screen.get_active_pane_id(&client_id);
                 screen.show_floating_panes_in_tab(client_id, tab_id, completion)?;
+                let new_pane_id = screen.get_active_pane_id(&client_id);
+                if let (Some(old), Some(new)) = (old_pane_id, new_pane_id) {
+                    screen.report_key_passthrough_state(client_id, old, new);
+                }
                 screen.log_and_report_session_state()?;
                 screen.render(None)?;
             },
@@ -8180,7 +8208,12 @@ pub(crate) fn screen_thread_main(
                 tab_id,
                 completion,
             } => {
+                let old_pane_id = screen.get_active_pane_id(&client_id);
                 screen.hide_floating_panes_in_tab(client_id, tab_id, completion)?;
+                let new_pane_id = screen.get_active_pane_id(&client_id);
+                if let (Some(old), Some(new)) = (old_pane_id, new_pane_id) {
+                    screen.report_key_passthrough_state(client_id, old, new);
+                }
                 screen.log_and_report_session_state()?;
                 screen.render(None)?;
             },
@@ -12335,6 +12368,16 @@ pub(crate) fn screen_thread_main(
                 default_shell,
                 mut completion_tx,
             ) => {
+                let affected_clients: Vec<ClientId> = screen
+                    .active_tab_ids
+                    .iter()
+                    .filter(|(_c_id, active_tab_id)| **active_tab_id == tab_id)
+                    .map(|(c_id, _active_tab_id)| *c_id)
+                    .collect();
+                let old_pane_ids: Vec<(ClientId, PaneId)> = affected_clients
+                    .iter()
+                    .filter_map(|c_id| screen.get_active_pane_id(c_id).map(|p| (*c_id, p)))
+                    .collect();
                 if let Some(tab) = screen.tabs.get_mut(&tab_id) {
                     // Pass None as client_id so that if a new floating pane must be spawned,
                     // it targets this tab (via TabIndex) rather than the focused tab of some client.
@@ -12347,6 +12390,11 @@ pub(crate) fn screen_thread_main(
                         c.set_error_message(format!("Tab with id {} not found", tab_id));
                     }
                     drop(completion_tx);
+                }
+                for (client_id, old_pane_id) in old_pane_ids {
+                    if let Some(new_pane_id) = screen.get_active_pane_id(&client_id) {
+                        screen.report_key_passthrough_state(client_id, old_pane_id, new_pane_id);
+                    }
                 }
                 screen.log_and_report_session_state()?;
                 screen.render(None)?;

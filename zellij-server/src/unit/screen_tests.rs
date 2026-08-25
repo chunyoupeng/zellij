@@ -11888,3 +11888,92 @@ fn scroll_bottom_buffer_exits_to_normal() {
         "Down that lands on the live bottom should exit Scroll"
     );
 }
+
+/// Drain every pending `ServerInstruction::SyncClientInputMode` from the mock
+/// server channel, returning the reported modes. Other variants are dropped.
+fn drain_sync_client_input_modes(
+    receiver: &Receiver<(ServerInstruction, ErrorContext)>,
+) -> Vec<InputMode> {
+    let mut modes = vec![];
+    while let Ok((instruction, _err_ctx)) = receiver.try_recv() {
+        if let ServerInstruction::SyncClientInputMode(_client_id, mode) = instruction {
+            modes.push(mode);
+        }
+    }
+    modes
+}
+
+#[test]
+pub fn new_floating_pane_reports_normal_and_hide_restores_search() {
+    let size = Size {
+        cols: 80,
+        rows: 20,
+    };
+    let client_id = 1;
+    let mut mock_screen = MockScreen::new(size);
+    let screen_thread = mock_screen.run(None, vec![]);
+    let server_receiver = mock_screen.server_receiver.take().unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    // Discard any incidental mode syncs emitted during startup.
+    let _ = drain_sync_client_input_modes(&server_receiver);
+
+    // 1) Put the single main (tiled) pane into Search mode.
+    let _ = mock_screen.to_screen.send(ScreenInstruction::ChangeMode(
+        InputMode::Search,
+        Some(InputMode::Normal),
+        client_id,
+        None,
+    ));
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    let mut modes = drain_sync_client_input_modes(&server_receiver);
+    assert!(
+        modes.contains(&InputMode::Search),
+        "entering Search should report Search, got {modes:?}"
+    );
+
+    // 2) Spawn a new floating pane that takes focus. It must not inherit the
+    // main pane's Search mode; it must start (and report) Normal.
+    let _ = mock_screen.to_screen.send(ScreenInstruction::NewPane(
+        PaneId::Terminal(2),
+        None, // initial_pane_title
+        None, // hold_for_command
+        None, // invoked_with
+        NewPanePlacement::Floating(None),
+        false, // start_suppressed
+        ClientTabIndexOrPaneId::ClientId(client_id),
+        None,  // completion_tx
+        false, // set_blocking
+    ));
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    modes.extend(drain_sync_client_input_modes(&server_receiver));
+    let first_search = modes
+        .iter()
+        .position(|m| *m == InputMode::Search)
+        .expect("a Search mode must have been reported");
+    let has_normal_after_search = modes[first_search..].iter().any(|m| *m == InputMode::Normal);
+    assert!(
+        has_normal_after_search,
+        "the new focused floating pane should switch the mode to Normal, got {modes:?}"
+    );
+
+    // 3) Hide the floating panes: focus returns to the main pane, which should
+    // restore its remembered Search mode.
+    let _ = mock_screen.to_screen.send(ScreenInstruction::HideFloatingPanes {
+        client_id,
+        tab_id: None,
+        completion: None,
+    });
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    modes.extend(drain_sync_client_input_modes(&server_receiver));
+    let last_normal = modes
+        .iter()
+        .rposition(|m| *m == InputMode::Normal)
+        .expect("a Normal mode must have been reported for the floating pane");
+    let has_search_after_normal = modes[last_normal..].iter().any(|m| *m == InputMode::Search);
+    assert!(
+        has_search_after_normal,
+        "hiding the floating pane should restore the main pane's Search mode, got {modes:?}"
+    );
+
+    mock_screen.teardown(vec![screen_thread]);
+}
