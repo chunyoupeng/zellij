@@ -11,7 +11,7 @@ use std::sync::{
 use zellij_utils::{
     input::{actions::Action, cast_termwiz_key, mouse::MouseEvent},
     ipc::ClientToServerMsg,
-    vendored::termwiz::input::{InputEvent, InputParser},
+    vendored::termwiz::input::{InputEvent, InputParser, KeyCode},
 };
 
 /// Per-WebSocket-connection parsing state. Owns the Kitty and termwiz
@@ -82,6 +82,11 @@ fn dispatch_termwiz_event(
     raw_bytes: &[u8],
 ) {
     match input_event {
+        InputEvent::Key(key_event)
+            if matches!(
+                key_event.key,
+                KeyCode::InternalPasteStart | KeyCode::InternalPasteEnd
+            ) => {},
         InputEvent::Key(key_event) => {
             let raw_bytes_vec = raw_bytes.to_vec();
             let key = cast_termwiz_key(key_event.clone(), &raw_bytes_vec, None);
@@ -242,6 +247,11 @@ pub fn parse_stdin(
     let single_event = events.len() == 1;
     for (_i, input_event) in events.into_iter().enumerate() {
         match input_event {
+            InputEvent::Key(key_event)
+                if matches!(
+                    key_event.key,
+                    KeyCode::InternalPasteStart | KeyCode::InternalPasteEnd
+                ) => {},
             InputEvent::Key(key_event) => {
                 // For multi-event buffers (e.g. IME composition), avoid
                 // duplicating the full buffer for each unmodified Char event.

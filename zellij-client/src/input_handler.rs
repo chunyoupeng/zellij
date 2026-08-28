@@ -19,7 +19,7 @@ use zellij_utils::{
     nested_session::{self, NestedSessionMessage},
     position::Position,
     vendored::termwiz::input::{
-        InputEvent, Modifiers, MouseButtons, MouseEvent as TermwizMouseEvent,
+        InputEvent, KeyCode, Modifiers, MouseButtons, MouseEvent as TermwizMouseEvent,
     },
 };
 
@@ -174,6 +174,11 @@ impl InputHandler {
             match self.receive_input_instructions.recv() {
                 Ok((InputInstruction::KeyEvent(input_event, raw_bytes), _error_context)) => {
                     match input_event {
+                        InputEvent::Key(key_event)
+                            if matches!(
+                                key_event.key,
+                                KeyCode::InternalPasteStart | KeyCode::InternalPasteEnd
+                            ) => {},
                         InputEvent::Key(key_event) => {
                             let key = cast_termwiz_key(
                                 key_event,

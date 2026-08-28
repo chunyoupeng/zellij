@@ -1610,6 +1610,13 @@ impl InputParser {
                 }),
             ) => {
                 self.state = InputState::Pasting(0);
+                // Report the marker as an internal event so callers that keep
+                // a parallel raw-byte buffer can account for it even when the
+                // marker arrives in a different read from the paste body. The
+                // client consumes this event without forwarding it to the
+                // application; suppressing the callback here leaves the six
+                // marker bytes stuck in that buffer until the next keypress.
+                callback(event, self.buf.len());
             },
             (
                 InputState::EscapeMaybeAlt,
@@ -1628,6 +1635,7 @@ impl InputParser {
                     self.buf.len(),
                 );
                 self.state = InputState::Pasting(0);
+                callback(event, self.buf.len());
             },
             (InputState::EscapeMaybeAlt, InputEvent::Key(KeyEvent { key, modifiers })) => {
                 // Treat this as ALT-key
@@ -1863,7 +1871,21 @@ impl InputParser {
     pub fn parse<F: FnMut(InputEvent)>(&mut self, bytes: &[u8], callback: F, maybe_more: bool) {
         // rebind (not `mut callback: F`) to keep the upstream signature intact
         let mut callback = callback;
-        self.parse_with_consumed(bytes, |event, _consumed| callback(event), maybe_more);
+        self.parse_with_consumed(
+            bytes,
+            |event, _consumed| {
+                if !matches!(
+                    event,
+                    InputEvent::Key(KeyEvent {
+                        key: KeyCode::InternalPasteStart | KeyCode::InternalPasteEnd,
+                        ..
+                    })
+                ) {
+                    callback(event);
+                }
+            },
+            maybe_more,
+        );
     }
 
     /// Like [`InputParser::parse`], but the callback also receives the number
@@ -2493,6 +2515,50 @@ mod test {
         p.parse(input2, |e| inputs.push(e), false);
 
         assert_eq!(vec![InputEvent::Paste("12345678".to_owned())], inputs)
+    }
+
+    #[test]
+    fn split_bracketed_paste_reports_marker_bytes_with_the_marker_event() {
+        let mut p = InputParser::new();
+        let mut events = Vec::new();
+        let mut raw = Vec::new();
+
+        p.parse_with_consumed(
+            b"\x1b[200~",
+            |event, consumed| events.push((event, consumed)),
+            MAYBE_MORE,
+        );
+        raw.extend_from_slice(b"\x1b[200~");
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].1, 6);
+        assert!(matches!(
+            events[0].0,
+            InputEvent::Key(KeyEvent {
+                key: KeyCode::InternalPasteStart,
+                ..
+            })
+        ));
+
+        p.parse_with_consumed(
+            b"1234",
+            |event, consumed| events.push((event, consumed)),
+            MAYBE_MORE,
+        );
+        raw.extend_from_slice(b"1234");
+        assert_eq!(events.len(), 1, "paste body waits for its end marker");
+
+        p.parse_with_consumed(
+            b"5678\x1b[201~",
+            |event, consumed| events.push((event, consumed)),
+            MAYBE_MORE,
+        );
+        raw.extend_from_slice(b"5678\x1b[201~");
+        assert_eq!(events.len(), 2);
+        assert_eq!(
+            events[1].1, 14,
+            "previously buffered body plus this body and end marker are consumed here"
+        );
+        assert_eq!(raw, b"\x1b[200~12345678\x1b[201~");
     }
 
     #[test]
