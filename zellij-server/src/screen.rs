@@ -5696,7 +5696,7 @@ impl Screen {
     fn active_pane_rows(&self, client_id: ClientId) -> usize {
         self.get_active_tab(client_id)
             .ok()
-            .and_then(|tab| tab.get_active_pane(client_id))
+            .and_then(|tab| tab.get_active_pane_or_floating_pane(client_id))
             .map(|p| p.rows().max(1))
             .unwrap_or(20)
     }
@@ -5704,7 +5704,7 @@ impl Screen {
     fn active_pane_is_scrolled(&self, client_id: ClientId) -> bool {
         self.get_active_tab(client_id)
             .ok()
-            .and_then(|tab| tab.get_active_pane(client_id))
+            .and_then(|tab| tab.get_active_pane_or_floating_pane(client_id))
             .map(|p| p.is_scrolled())
             .unwrap_or(false)
     }
@@ -5719,7 +5719,13 @@ impl Screen {
         kind: ScrollBufferKind,
     ) -> Result<()> {
         let in_scroll_group = self.client_in_copy_capable_mode(client_id);
-        if in_scroll_group && !self.active_pane_is_scrolled(client_id) {
+        let in_copy_mode = self
+            .get_active_tab(client_id)
+            .ok()
+            .and_then(|tab| tab.get_active_pane_or_floating_pane(client_id))
+            .map(|pane| pane.is_in_copy_mode())
+            .unwrap_or(false);
+        if in_scroll_group && !in_copy_mode && !self.active_pane_is_scrolled(client_id) {
             let base = self.mode_info.get(&client_id).and_then(|m| m.base_mode);
             return self.change_mode(InputMode::Normal, base, client_id);
         }
@@ -5732,7 +5738,7 @@ impl Screen {
             }
         }, ?);
 
-        if in_scroll_group && !self.active_pane_is_scrolled(client_id) {
+        if in_scroll_group && !in_copy_mode && !self.active_pane_is_scrolled(client_id) {
             let base = self.mode_info.get(&client_id).and_then(|m| m.base_mode);
             return self.change_mode(InputMode::Normal, base, client_id);
         }
@@ -5765,10 +5771,9 @@ impl Screen {
         if !self.ime_enabled || self.ime_state != ImeState::Idle {
             return;
         }
-        let (Some(cmd), Some(english)) = (
-            self.ime_switch_command.clone(),
-            self.ime_english.clone(),
-        ) else {
+        let (Some(cmd), Some(english)) =
+            (self.ime_switch_command.clone(), self.ime_english.clone())
+        else {
             return;
         };
         let prev = std::process::Command::new("/bin/zsh")
@@ -5801,38 +5806,213 @@ impl Screen {
     }
 
     pub fn handle_toggle_copy_mode(&mut self, client_id: ClientId) -> Result<()> {
-        // Native vim-like copy/selection mode is temporarily disabled: clear any
-        // leftover session so a stray ToggleCopyMode cannot paint a selection.
         active_tab!(self, client_id, |tab: &mut Tab| {
-            tab.exit_copy_mode_on_active_pane(client_id);
+            if let Some(active_pane) = tab.get_active_pane_or_floating_pane_mut(client_id) {
+                if active_pane.is_in_copy_mode() {
+                    // `v` toggles character-wise visual mode while copy mode is active.
+                    active_pane.toggle_copy_visual();
+                } else {
+                    active_pane.enter_copy_mode();
+                    // `v` enters visual mode immediately, just like Vim.
+                    active_pane.toggle_copy_visual();
+                }
+            }
         });
         Ok(())
     }
 
     pub fn handle_copy_mode_cancel(&mut self, client_id: ClientId) -> Result<()> {
-        // Copy/selection mode disabled — just clear any leftover session.
-        active_tab!(self, client_id, |tab: &mut Tab| {
-            tab.exit_copy_mode_on_active_pane(client_id);
-        });
+        let in_copy_mode = self
+            .get_active_tab_mut(client_id)
+            .ok()
+            .and_then(|tab| tab.get_active_pane_or_floating_pane_mut(client_id))
+            .map(|pane| pane.is_in_copy_mode())
+            .unwrap_or(false);
+
+        let mut exited_copy_mode = false;
+        if in_copy_mode {
+            active_tab!(self, client_id, |tab: &mut Tab| {
+                if let Some(active_pane) = tab.get_active_pane_or_floating_pane_mut(client_id) {
+                    exited_copy_mode = matches!(
+                        active_pane.handle_copy_mode_key_active(CopyModeKey::Esc),
+                        crate::copy_mode::CopyModeActiveResult::Exit { .. }
+                    );
+                }
+            });
+        }
+
+        if !in_copy_mode || exited_copy_mode {
+            let base_mode = self.mode_info.get(&client_id).and_then(|m| m.base_mode);
+            self.change_mode(InputMode::Normal, base_mode, client_id)?;
+        }
         Ok(())
     }
 
     pub fn handle_copy_mode_yank(&mut self, client_id: ClientId) -> Result<()> {
-        active_tab!(self, client_id, |tab: &mut Tab| {
+        let in_copy_mode = self
+            .get_active_tab_mut(client_id)
+            .ok()
+            .and_then(|tab| tab.get_active_pane_or_floating_pane_mut(client_id))
+            .map(|pane| pane.is_in_copy_mode())
+            .unwrap_or(false);
+        if !in_copy_mode {
+            return Ok(());
+        }
+
+        active_tab!(self, client_id, |tab: &mut Tab| -> Result<()> {
+            tab.copy_selection(client_id)?;
             tab.exit_copy_mode_on_active_pane(client_id);
-        });
-        Ok(())
+            Ok(())
+        }, ?);
+        let base_mode = self.mode_info.get(&client_id).and_then(|m| m.base_mode);
+        self.change_mode(InputMode::Normal, base_mode, client_id)
     }
 
-    pub fn handle_copy_mode_key(
-        &mut self,
-        client_id: ClientId,
-        _key: CopyModeKey,
-    ) -> Result<()> {
-        // Copy/selection mode disabled — clear any leftover session.
+    pub fn handle_copy_mode_key(&mut self, client_id: ClientId, key: CopyModeKey) -> Result<()> {
+        let in_copy_mode = self
+            .get_active_tab_mut(client_id)
+            .ok()
+            .and_then(|tab| tab.get_active_pane_or_floating_pane_mut(client_id))
+            .map(|pane| pane.is_in_copy_mode())
+            .unwrap_or(false);
+
+        if !in_copy_mode {
+            if key == CopyModeKey::WordEnd {
+                // `e` is also the historical EditScrollback key. Keep that
+                // behavior in Scroll mode, while handling it as word-end once
+                // copy mode is active.
+                active_tab!(self, client_id, |tab: &mut Tab| -> Result<()> {
+                    tab.edit_scrollback(client_id, None)
+                }, ?);
+                let base_mode = self.mode_info.get(&client_id).and_then(|m| m.base_mode);
+                self.change_mode(InputMode::Normal, base_mode, client_id)?;
+                return Ok(());
+            }
+            if key == CopyModeKey::LineSelect {
+                active_tab!(self, client_id, |tab: &mut Tab| {
+                    if let Some(active_pane) = tab.get_active_pane_or_floating_pane_mut(client_id) {
+                        active_pane.enter_copy_mode();
+                        active_pane.handle_copy_mode_key_active(key);
+                    }
+                });
+                return Ok(());
+            }
+            // CopyModeMove is deliberately also useful as a fallback from Scroll:
+            // h/l retain their page-scroll behavior and j/k retain line scrolling.
+            match key {
+                CopyModeKey::Left => {
+                    let rows = self.active_pane_rows(client_id);
+                    self.scroll_up_with_bottom_buffer(client_id, rows, ScrollBufferKind::Page);
+                },
+                CopyModeKey::Right => {
+                    let rows = self.active_pane_rows(client_id);
+                    self.scroll_down_with_bottom_buffer(client_id, rows, ScrollBufferKind::Page)?;
+                },
+                CopyModeKey::Up => {
+                    self.scroll_up_with_bottom_buffer(client_id, 1, ScrollBufferKind::Line)
+                },
+                CopyModeKey::Down => {
+                    self.scroll_down_with_bottom_buffer(client_id, 1, ScrollBufferKind::Line)?
+                },
+                CopyModeKey::PageUp => {
+                    let rows = self.active_pane_rows(client_id);
+                    self.scroll_up_with_bottom_buffer(client_id, rows, ScrollBufferKind::Page);
+                },
+                CopyModeKey::PageDown => {
+                    let rows = self.active_pane_rows(client_id);
+                    self.scroll_down_with_bottom_buffer(client_id, rows, ScrollBufferKind::Page)?;
+                },
+                CopyModeKey::HalfPageUp => {
+                    let rows = (self.active_pane_rows(client_id).saturating_sub(1) / 2).max(1);
+                    self.scroll_up_with_bottom_buffer(client_id, rows, ScrollBufferKind::HalfPage);
+                },
+                CopyModeKey::HalfPageDown => {
+                    let rows = (self.active_pane_rows(client_id).saturating_sub(1) / 2).max(1);
+                    self.scroll_down_with_bottom_buffer(
+                        client_id,
+                        rows,
+                        ScrollBufferKind::HalfPage,
+                    )?;
+                },
+                CopyModeKey::Esc | CopyModeKey::Yank => {
+                    let base_mode = self.mode_info.get(&client_id).and_then(|m| m.base_mode);
+                    self.change_mode(InputMode::Normal, base_mode, client_id)?;
+                },
+                CopyModeKey::LineStart
+                | CopyModeKey::LineSelect
+                | CopyModeKey::LineEnd
+                | CopyModeKey::WordStart
+                | CopyModeKey::WordEnd
+                | CopyModeKey::WordBack => {},
+            }
+            return Ok(());
+        }
+
+        let mut result = crate::copy_mode::CopyModeActiveResult::Continue;
         active_tab!(self, client_id, |tab: &mut Tab| {
-            tab.exit_copy_mode_on_active_pane(client_id);
+            if let Some(active_pane) = tab.get_active_pane_or_floating_pane_mut(client_id) {
+                result = active_pane.handle_copy_mode_key_active(key);
+            }
         });
+
+        match key {
+            CopyModeKey::PageUp => {
+                let rows = self.active_pane_rows(client_id);
+                self.scroll_up_with_bottom_buffer(client_id, rows, ScrollBufferKind::Page);
+                active_tab!(self, client_id, |tab: &mut Tab| {
+                    if let Some(pane) = tab.get_active_pane_or_floating_pane_mut(client_id) {
+                        pane.resync_copy_selection_after_scroll();
+                    }
+                });
+            },
+            CopyModeKey::PageDown => {
+                let rows = self.active_pane_rows(client_id);
+                self.scroll_down_with_bottom_buffer(client_id, rows, ScrollBufferKind::Page)?;
+                active_tab!(self, client_id, |tab: &mut Tab| {
+                    if let Some(pane) = tab.get_active_pane_or_floating_pane_mut(client_id) {
+                        pane.resync_copy_selection_after_scroll();
+                    }
+                });
+            },
+            CopyModeKey::HalfPageUp => {
+                let rows = (self.active_pane_rows(client_id).saturating_sub(1) / 2).max(1);
+                self.scroll_up_with_bottom_buffer(client_id, rows, ScrollBufferKind::HalfPage);
+                active_tab!(self, client_id, |tab: &mut Tab| {
+                    if let Some(pane) = tab.get_active_pane_or_floating_pane_mut(client_id) {
+                        pane.resync_copy_selection_after_scroll();
+                    }
+                });
+            },
+            CopyModeKey::HalfPageDown => {
+                let rows = (self.active_pane_rows(client_id).saturating_sub(1) / 2).max(1);
+                self.scroll_down_with_bottom_buffer(client_id, rows, ScrollBufferKind::HalfPage)?;
+                active_tab!(self, client_id, |tab: &mut Tab| {
+                    if let Some(pane) = tab.get_active_pane_or_floating_pane_mut(client_id) {
+                        pane.resync_copy_selection_after_scroll();
+                    }
+                });
+            },
+            _ => {},
+        }
+
+        if matches!(result, crate::copy_mode::CopyModeActiveResult::Exit { .. }) {
+            let base_mode = self.mode_info.get(&client_id).and_then(|m| m.base_mode);
+            self.change_mode(InputMode::Normal, base_mode, client_id)?;
+        } else if matches!(result, crate::copy_mode::CopyModeActiveResult::ScrollUp) {
+            self.scroll_up_with_bottom_buffer(client_id, 1, ScrollBufferKind::Line);
+            active_tab!(self, client_id, |tab: &mut Tab| {
+                if let Some(pane) = tab.get_active_pane_or_floating_pane_mut(client_id) {
+                    pane.resync_copy_selection_after_scroll();
+                }
+            });
+        } else if matches!(result, crate::copy_mode::CopyModeActiveResult::ScrollDown) {
+            self.scroll_down_with_bottom_buffer(client_id, 1, ScrollBufferKind::Line)?;
+            active_tab!(self, client_id, |tab: &mut Tab| {
+                if let Some(pane) = tab.get_active_pane_or_floating_pane_mut(client_id) {
+                    pane.resync_copy_selection_after_scroll();
+                }
+            });
+        }
         Ok(())
     }
 
@@ -8907,11 +9087,7 @@ pub(crate) fn screen_thread_main(
                 _completion_tx, // the action ends here, dropping this will release anything
                                 // waiting for it
             ) => {
-                screen.scroll_up_with_bottom_buffer(
-                    client_id,
-                    1,
-                    ScrollBufferKind::Line,
-                );
+                screen.scroll_up_with_bottom_buffer(client_id, 1, ScrollBufferKind::Line);
                 screen.render(None)?;
             },
             ScreenInstruction::MovePane(
@@ -9011,11 +9187,7 @@ pub(crate) fn screen_thread_main(
                 _completion_tx, // the action ends here, dropping this will release anything
                                 // waiting for it
             ) => {
-                screen.scroll_down_with_bottom_buffer(
-                    client_id,
-                    1,
-                    ScrollBufferKind::Line,
-                )?;
+                screen.scroll_down_with_bottom_buffer(client_id, 1, ScrollBufferKind::Line)?;
                 screen.render(None)?;
             },
             ScreenInstruction::ScrollDownAt(
@@ -9064,11 +9236,7 @@ pub(crate) fn screen_thread_main(
                                 // waiting for it
             ) => {
                 let rows = screen.active_pane_rows(client_id);
-                screen.scroll_up_with_bottom_buffer(
-                    client_id,
-                    rows,
-                    ScrollBufferKind::Page,
-                );
+                screen.scroll_up_with_bottom_buffer(client_id, rows, ScrollBufferKind::Page);
                 screen.render(None)?;
             },
             ScreenInstruction::PageScrollDown(
@@ -9077,11 +9245,7 @@ pub(crate) fn screen_thread_main(
                                 // waiting for it
             ) => {
                 let rows = screen.active_pane_rows(client_id);
-                screen.scroll_down_with_bottom_buffer(
-                    client_id,
-                    rows,
-                    ScrollBufferKind::Page,
-                )?;
+                screen.scroll_down_with_bottom_buffer(client_id, rows, ScrollBufferKind::Page)?;
                 screen.render(None)?;
             },
             ScreenInstruction::HalfPageScrollUp(
@@ -9090,11 +9254,7 @@ pub(crate) fn screen_thread_main(
                                 // waiting for it
             ) => {
                 let rows = (screen.active_pane_rows(client_id).saturating_sub(1) / 2).max(1);
-                screen.scroll_up_with_bottom_buffer(
-                    client_id,
-                    rows,
-                    ScrollBufferKind::HalfPage,
-                );
+                screen.scroll_up_with_bottom_buffer(client_id, rows, ScrollBufferKind::HalfPage);
                 screen.render(None)?;
             },
             ScreenInstruction::HalfPageScrollDown(

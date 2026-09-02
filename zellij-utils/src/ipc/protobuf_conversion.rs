@@ -1002,6 +1002,7 @@ impl From<crate::input::actions::Action>
             CopyModeCancelAction,
             CopyModeHalfPageScrollAction,
             CopyModeLineEndAction,
+            CopyModeLineSelectAction,
             CopyModeLineStartAction,
             CopyModeMoveAction,
             CopyModePageScrollAction,
@@ -2061,6 +2062,9 @@ impl From<crate::input::actions::Action>
             crate::input::actions::Action::CopyModeLineStart => {
                 ActionType::CopyModeLineStart(CopyModeLineStartAction {})
             },
+            crate::input::actions::Action::CopyModeLineSelect => {
+                ActionType::CopyModeLineSelect(CopyModeLineSelectAction {})
+            },
             crate::input::actions::Action::CopyModeLineEnd => {
                 ActionType::CopyModeLineEnd(CopyModeLineEndAction {})
             },
@@ -2725,6 +2729,9 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Action>
             },
             ActionType::CopyModeLineStart(_) => {
                 Ok(crate::input::actions::Action::CopyModeLineStart)
+            },
+            ActionType::CopyModeLineSelect(_) => {
+                Ok(crate::input::actions::Action::CopyModeLineSelect)
             },
             ActionType::CopyModeLineEnd(_) => Ok(crate::input::actions::Action::CopyModeLineEnd),
             ActionType::CopyModeWordStart(_) => {

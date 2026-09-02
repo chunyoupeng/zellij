@@ -85,6 +85,7 @@ macro_rules! parse_kdl_action_arguments {
                 "Copy" => Ok(Action::Copy),
                 "ToggleCopyMode" => Ok(Action::ToggleCopyMode),
                 "CopyModeLineStart" => Ok(Action::CopyModeLineStart),
+                "CopyModeLineSelect" => Ok(Action::CopyModeLineSelect),
                 "CopyModeLineEnd" => Ok(Action::CopyModeLineEnd),
                 "CopyModeWordStart" => Ok(Action::CopyModeWordStart),
                 "CopyModeWordEnd" => Ok(Action::CopyModeWordEnd),
@@ -1316,6 +1317,7 @@ impl Action {
                 Some(node)
             },
             Action::CopyModeLineStart => Some(KdlNode::new("CopyModeLineStart")),
+            Action::CopyModeLineSelect => Some(KdlNode::new("CopyModeLineSelect")),
             Action::CopyModeLineEnd => Some(KdlNode::new("CopyModeLineEnd")),
             Action::CopyModeWordStart => Some(KdlNode::new("CopyModeWordStart")),
             Action::CopyModeWordEnd => Some(KdlNode::new("CopyModeWordEnd")),
@@ -1774,6 +1776,9 @@ impl TryFrom<(&KdlNode, &Options)> for Action {
                 parse_kdl_action_arguments!(action_name, action_arguments, kdl_action)
             },
             "CopyModeLineStart" => {
+                parse_kdl_action_arguments!(action_name, action_arguments, kdl_action)
+            },
+            "CopyModeLineSelect" => {
                 parse_kdl_action_arguments!(action_name, action_arguments, kdl_action)
             },
             "CopyModeLineEnd" => {

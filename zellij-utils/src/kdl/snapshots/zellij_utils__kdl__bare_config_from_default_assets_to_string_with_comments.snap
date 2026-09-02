@@ -90,14 +90,50 @@ keybinds clear-defaults=true {
         bind "tab" { MovePane; }
     }
     scroll {
-        bind "e" { EditScrollback; SwitchToMode "normal"; }
+        bind "PageDown" { CopyModePageScroll "down"; }
+        bind "PageUp" { CopyModePageScroll "up"; }
+        bind "left" { CopyModeMove "left"; }
+        bind "down" { CopyModeMove "down"; }
+        bind "up" { CopyModeMove "up"; }
+        bind "right" { CopyModeMove "right"; }
+        bind "$" { CopyModeLineEnd; }
+        bind "0" { CopyModeLineStart; }
+        bind "V" { CopyModeLineSelect; }
+        bind "b" { CopyModeWordBack; }
+        bind "Ctrl b" { CopyModePageScroll "up"; }
+        bind "d" { CopyModeHalfPageScroll "down"; }
+        bind "e" { CopyModeWordEnd; }
+        bind "Ctrl f" { CopyModePageScroll "down"; }
+        bind "h" { CopyModeMove "left"; }
+        bind "j" { CopyModeMove "down"; }
+        bind "k" { CopyModeMove "up"; }
+        bind "l" { CopyModeMove "right"; }
         bind "s" { SwitchToMode "entersearch"; SearchInput 0; }
+        bind "u" { CopyModeHalfPageScroll "up"; }
+        bind "v" { ToggleCopyMode; }
+        bind "w" { CopyModeWordStart; }
+        bind "y" { CopyModeYank; }
+        bind "esc" { CopyModeCancel; }
     }
     search {
+        bind "PageDown" { PageScrollDown; }
+        bind "PageUp" { PageScrollUp; }
+        bind "left" { PageScrollUp; }
+        bind "down" { ScrollDown; }
+        bind "up" { ScrollUp; }
+        bind "right" { PageScrollDown; }
+        bind "Ctrl b" { PageScrollUp; }
         bind "c" { SearchToggleOption "CaseSensitivity"; }
+        bind "d" { HalfPageScrollDown; }
+        bind "Ctrl f" { PageScrollDown; }
+        bind "h" { PageScrollUp; }
+        bind "j" { ScrollDown; }
+        bind "k" { ScrollUp; }
+        bind "l" { PageScrollDown; }
         bind "n" { Search "down"; }
         bind "o" { SearchToggleOption "WholeWord"; }
         bind "p" { Search "up"; }
+        bind "u" { HalfPageScrollUp; }
         bind "w" { SearchToggleOption "Wrap"; }
     }
     session {
@@ -195,29 +231,15 @@ keybinds clear-defaults=true {
     shared_except "normal" "locked" "entersearch" {
         bind "enter" { SwitchToMode "normal"; }
     }
-    shared_except "normal" "locked" "entersearch" "renametab" "renamepane" {
+    shared_except "normal" "locked" "scroll" "entersearch" "renametab" "renamepane" {
         bind "esc" { SwitchToMode "normal"; }
     }
     shared_among "pane" "tmux" {
         bind "x" { CloseFocus; SwitchToMode "normal"; }
     }
     shared_among "scroll" "search" {
-        bind "PageDown" { PageScrollDown; }
-        bind "PageUp" { PageScrollUp; }
-        bind "left" { PageScrollUp; }
-        bind "down" { ScrollDown; }
-        bind "up" { ScrollUp; }
-        bind "right" { PageScrollDown; }
-        bind "Ctrl b" { PageScrollUp; }
         bind "Ctrl c" { ScrollToBottom; SwitchToMode "normal"; }
-        bind "d" { HalfPageScrollDown; }
-        bind "Ctrl f" { PageScrollDown; }
-        bind "h" { PageScrollUp; }
-        bind "j" { ScrollDown; }
-        bind "k" { ScrollUp; }
-        bind "l" { PageScrollDown; }
         bind "Ctrl s" { SwitchToMode "normal"; }
-        bind "u" { HalfPageScrollUp; }
     }
     entersearch {
         bind "Ctrl c" { SwitchToMode "scroll"; }

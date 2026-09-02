@@ -10,18 +10,32 @@ use zellij_utils::position::Position;
 pub struct CopySession {
     pub cursor: Position,
     pub visual_anchor: Option<Position>,
+    pub linewise: bool,
 }
 
 impl CopySession {
     pub fn new_at_origin() -> Self {
+        Self::new_at_position(Position::new(0, 0))
+    }
+
+    pub fn new_at_position(cursor: Position) -> Self {
         Self {
-            cursor: Position::new(0, 0),
+            cursor,
             visual_anchor: None,
+            linewise: false,
         }
     }
 
     pub fn selection_start_end(&self) -> (Position, Position) {
         let anchor = self.visual_anchor.unwrap_or(self.cursor);
+        if self.linewise {
+            let start_line = anchor.line.0.min(self.cursor.line.0);
+            let end_line = anchor.line.0.max(self.cursor.line.0);
+            return (
+                Position::new(start_line as i32, 0),
+                Position::new(end_line as i32, u16::MAX),
+            );
+        }
         // Half-open range: include both the anchor cell and the cursor cell.
         if self.cursor >= anchor {
             (
@@ -54,6 +68,7 @@ pub enum CopyModeKey {
     PageUp,
     PageDown,
     LineStart,
+    LineSelect,
     LineEnd,
     WordEnd,
     WordStart,
@@ -95,7 +110,9 @@ pub enum CopyModeActiveResult {
     /// Stay in copy mode; selection already synced (or no visual change).
     Continue,
     /// Exit copy mode (caller clears selection). Optionally yank after.
-    Exit { yank: bool },
+    Exit {
+        yank: bool,
+    },
     /// Scroll the viewport one line, then re-sync (free-cursor edge only).
     ScrollUp,
     ScrollDown,
@@ -130,7 +147,9 @@ pub fn handle_active_key(
                 sync_selection(grid, session);
                 CopyModeActiveResult::Continue
             } else if session.visual_anchor.is_none() {
-                clear_selection(grid);
+                // Keep the one-cell cursor selection in the grid. The viewport
+                // scroll moves it with the content, and resync updates the
+                // session coordinates accordingly.
                 CopyModeActiveResult::ScrollUp
             } else {
                 sync_selection(grid, session);
@@ -143,7 +162,9 @@ pub fn handle_active_key(
                 sync_selection(grid, session);
                 CopyModeActiveResult::Continue
             } else if session.visual_anchor.is_none() {
-                clear_selection(grid);
+                // Keep the one-cell cursor selection in the grid. The viewport
+                // scroll moves it with the content, and resync updates the
+                // session coordinates accordingly.
                 CopyModeActiveResult::ScrollDown
             } else {
                 sync_selection(grid, session);
@@ -151,6 +172,15 @@ pub fn handle_active_key(
             }
         },
         CopyModeKey::LineStart => {
+            session.cursor.column.0 = 0;
+            sync_selection(grid, session);
+            CopyModeActiveResult::Continue
+        },
+        CopyModeKey::LineSelect => {
+            if session.visual_anchor.is_none() {
+                session.visual_anchor = Some(session.cursor);
+            }
+            session.linewise = true;
             session.cursor.column.0 = 0;
             sync_selection(grid, session);
             CopyModeActiveResult::Continue
@@ -176,6 +206,7 @@ pub fn handle_active_key(
         CopyModeKey::Esc => {
             if session.visual_anchor.is_some() {
                 session.visual_anchor = None;
+                session.linewise = false;
                 sync_selection(grid, session);
                 CopyModeActiveResult::Continue
             } else {
@@ -195,6 +226,7 @@ pub fn toggle_visual(session: &mut CopySession, grid: &mut Grid) {
         None => Some(session.cursor),
         Some(_) => None,
     };
+    session.linewise = false;
     sync_selection(grid, session);
 }
 
@@ -412,6 +444,17 @@ mod tests {
             handle_active_key(&mut session, &mut grid, CopyModeKey::Yank),
             CopyModeActiveResult::Exit { yank: true }
         );
+    }
+
+    #[test]
+    fn linewise_visual_selection_covers_complete_lines() {
+        let mut grid = grid_with_text(5, 40, "first\r\nsecond\r\nthird");
+        let mut session = CopySession::new_at_origin();
+        session.visual_anchor = Some(Position::new(0, 0));
+        session.cursor = Position::new(1, 3);
+        session.linewise = true;
+        sync_selection(&mut grid, &session);
+        assert_eq!(grid.get_selected_text().as_deref(), Some("first\nsecond"));
     }
 
     #[test]

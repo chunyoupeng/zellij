@@ -3704,6 +3704,15 @@ impl Tab {
             }
         })
     }
+    pub fn get_active_pane_or_floating_pane(&self, client_id: ClientId) -> Option<&dyn Pane> {
+        if self.floating_panes.panes_are_visible() && self.floating_panes.has_active_panes() {
+            self.floating_panes
+                .get_active_pane(client_id)
+                .map(Box::as_ref)
+        } else {
+            self.get_active_pane(client_id)
+        }
+    }
     pub fn get_pane_with_id(&self, pane_id: PaneId) -> Option<&dyn Pane> {
         self.floating_panes
             .get_pane(pane_id)

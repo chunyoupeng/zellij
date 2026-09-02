@@ -73,15 +73,26 @@ keybinds {
     }
     scroll {
         bind "Ctrl s" { SwitchToMode "Normal"; }
-        bind "e" { EditScrollback; SwitchToMode "Normal"; }
+        bind "e" { CopyModeWordEnd; }
         bind "s" { SwitchToMode "EnterSearch"; SearchInput 0; }
         bind "Ctrl c" { ScrollToBottom; SwitchToMode "Normal"; }
-        bind "j" "Down" { ScrollDown; }
-        bind "k" "Up" { ScrollUp; }
-        bind "Ctrl f" "PageDown" "Right" "l" { PageScrollDown; }
-        bind "Ctrl b" "PageUp" "Left" "h" { PageScrollUp; }
-        bind "d" { HalfPageScrollDown; }
-        bind "u" { HalfPageScrollUp; }
+        bind "j" "Down" { CopyModeMove "down"; }
+        bind "k" "Up" { CopyModeMove "up"; }
+        bind "Ctrl f" "PageDown" { CopyModePageScroll "down"; }
+        bind "Ctrl b" "PageUp" { CopyModePageScroll "up"; }
+        bind "h" "Left" { CopyModeMove "left"; }
+        bind "l" "Right" { CopyModeMove "right"; }
+        bind "d" { CopyModeHalfPageScroll "down"; }
+        bind "u" { CopyModeHalfPageScroll "up"; }
+        bind "w" { CopyModeWordStart; }
+        bind "b" { CopyModeWordBack; }
+        bind "0" { CopyModeLineStart; }
+        bind "$" { CopyModeLineEnd; }
+        // Vim-style selection: v selects characters, V selects complete lines.
+        bind "v" { ToggleCopyMode; }
+        bind "V" { CopyModeLineSelect; }
+        bind "y" { CopyModeYank; }
+        bind "Esc" { CopyModeCancel; }
         // uncomment this and adjust key if using copy_on_select=false
         // bind "Alt c" { Copy; }
     }

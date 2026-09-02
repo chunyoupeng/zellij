@@ -291,6 +291,7 @@ message Action {
     CopyModeHalfPageScrollAction copy_mode_half_page_scroll = 151;
     CopyModeLineStartAction copy_mode_line_start = 152;
     CopyModeLineEndAction copy_mode_line_end = 153;
+    CopyModeLineSelectAction copy_mode_line_select = 159;
     CopyModeWordStartAction copy_mode_word_start = 154;
     CopyModeWordEndAction copy_mode_word_end = 155;
     CopyModeWordBackAction copy_mode_word_back = 156;
@@ -368,6 +369,7 @@ message CopyModeHalfPageScrollAction {
 }
 message CopyModeLineStartAction {}
 message CopyModeLineEndAction {}
+message CopyModeLineSelectAction {}
 message CopyModeWordStartAction {}
 message CopyModeWordEndAction {}
 message CopyModeWordBackAction {}

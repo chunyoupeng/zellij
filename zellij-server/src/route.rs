@@ -1284,6 +1284,15 @@ pub(crate) fn route_action(
                 ))
                 .with_context(err_context)?;
         },
+        Action::CopyModeLineSelect => {
+            senders
+                .send_to_screen(ScreenInstruction::CopyModeKey(
+                    crate::copy_mode::CopyModeKey::LineSelect,
+                    client_id,
+                    Some(NotificationEnd::new(completion_tx)),
+                ))
+                .with_context(err_context)?;
+        },
         Action::CopyModeLineEnd => {
             senders
                 .send_to_screen(ScreenInstruction::CopyModeKey(
