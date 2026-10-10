@@ -1035,3 +1035,112 @@ pub fn guest_modal_no_modal_passes_input_through() {
         Some(crate::tab::AdjustedInput::WriteBytesToTerminal(_))
     ));
 }
+
+#[test]
+pub fn terminal_pane_effective_agent_status_and_osc7501() {
+    use crate::agent_detection::{AgentActivity, AgentStatus};
+    use zellij_utils::input::command::RunCommand;
+
+    let mut pane = create_guest_modal_pane();
+    pane.set_title("bash".into());
+
+    // 1. Initially without status
+    assert_eq!(pane.effective_agent_status(), None);
+    assert_eq!(pane.title_with_bell_indicator("bash".into()), "bash");
+
+    // 2. Set heuristic status
+    pane.agent_status = Some(AgentStatus {
+        name: "claude".into(),
+        activity: AgentActivity::Idle,
+    });
+    assert_eq!(
+        pane.effective_agent_status(),
+        Some(AgentStatus {
+            name: "claude".into(),
+            activity: AgentActivity::Idle,
+        })
+    );
+
+    // 3. OSC status arrives: authoritative override over heuristic
+    pane.handle_pty_bytes(b"\x1b]7501;state=working:app=pi\x1b\\".to_vec());
+    assert_eq!(
+        pane.effective_agent_status(),
+        Some(AgentStatus {
+            name: "pi".into(),
+            activity: AgentActivity::Working,
+        })
+    );
+
+    // 4. OSC status without app: name falls back to heuristic agent name
+    pane.handle_pty_bytes(b"\x1b]7501;state=done\x1b\\".to_vec());
+    assert_eq!(
+        pane.effective_agent_status(),
+        Some(AgentStatus {
+            name: "claude".into(),
+            activity: AgentActivity::Done,
+        })
+    );
+
+    // 5. When heuristic is None and OSC status has no app: name is empty
+    pane.agent_status = None;
+    assert_eq!(
+        pane.effective_agent_status(),
+        Some(AgentStatus {
+            name: "".into(),
+            activity: AgentActivity::Done,
+        })
+    );
+
+    // 6. Blocked and Error states
+    pane.handle_pty_bytes(b"\x1b]7501;state=blocked:app=terraform\x1b\\".to_vec());
+    assert_eq!(
+        pane.effective_agent_status(),
+        Some(AgentStatus {
+            name: "terraform".into(),
+            activity: AgentActivity::Blocked,
+        })
+    );
+
+    pane.handle_pty_bytes(b"\x1b]7501;state=error:app=rsync\x1b\\".to_vec());
+    assert_eq!(
+        pane.effective_agent_status(),
+        Some(AgentStatus {
+            name: "rsync".into(),
+            activity: AgentActivity::Error,
+        })
+    );
+
+    // Restore heuristic agent status
+    pane.agent_status = Some(AgentStatus {
+        name: "claude".into(),
+        activity: AgentActivity::Idle,
+    });
+
+    // 7. state=clear falls back to heuristic status
+    pane.handle_pty_bytes(b"\x1b]7501;state=clear\x1b\\".to_vec());
+    assert_eq!(
+        pane.effective_agent_status(),
+        Some(AgentStatus {
+            name: "claude".into(),
+            activity: AgentActivity::Idle,
+        })
+    );
+
+    // 8. hold() clears OSC status when process exits
+    pane.handle_pty_bytes(b"\x1b]7501;state=working:app=cargo\x1b\\".to_vec());
+    assert_eq!(
+        pane.effective_agent_status(),
+        Some(AgentStatus {
+            name: "cargo".into(),
+            activity: AgentActivity::Working,
+        })
+    );
+    pane.hold(Some(0), false, RunCommand::default());
+    assert_eq!(
+        pane.effective_agent_status(),
+        Some(AgentStatus {
+            name: "claude".into(),
+            activity: AgentActivity::Idle,
+        })
+    );
+}

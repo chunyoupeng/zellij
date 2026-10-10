@@ -27,6 +27,7 @@ use zellij_utils::position::Position;
 use zellij_utils::position::{Column, Line};
 use zellij_utils::shared::clean_string_from_control_and_linebreak;
 
+use crate::agent_detection::AgentStatus;
 use crate::background_jobs::BackgroundJob;
 use crate::pane_groups::PaneGroups;
 use crate::pty_writer::PtyWriteInstruction;
@@ -727,8 +728,26 @@ pub trait Pane {
     fn start_loading_indication(&mut self, _loading_indication: LoadingIndication) {} // only relevant for plugins
     fn progress_animation_offset(&mut self) {} // only relevant for plugins
     fn current_title(&self) -> String;
+    fn effective_agent_status(&self) -> Option<AgentStatus> {
+        None
+    }
     fn stack_list_entry_label(&self) -> String {
         self.current_title()
+    }
+    fn stack_list_entry_width(&self) -> usize {
+        let label_width = self.stack_list_entry_label().width();
+        let badge_width = self
+            .effective_agent_status()
+            .map(|s| {
+                let bw = s.badge_text().width();
+                if label_width > 0 {
+                    bw + 1
+                } else {
+                    bw
+                }
+            })
+            .unwrap_or(0);
+        label_width + badge_width
     }
     fn custom_title(&self) -> Option<String>;
     fn has_explicit_title(&self) -> bool {
@@ -1649,7 +1668,7 @@ impl Tab {
                         self.suppressed_panes.get(member).map(|(_, p)| &**p)
                     }
                 })
-                .map(|pane| pane.stack_list_entry_label().width())
+                .map(|pane| pane.stack_list_entry_width())
                 .max()
                 .unwrap_or(0);
             let stack_is_focused = active_panes.values().any(|p_id| *p_id == list.visible);

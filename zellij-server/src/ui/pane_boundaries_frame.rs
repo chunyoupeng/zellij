@@ -474,25 +474,36 @@ impl PaneFrame {
             None
         }
     }
+
+    fn agent_badge_color(&self, activity: AgentActivity) -> Option<PaletteColor> {
+        match activity {
+            AgentActivity::Working => Some(self.style.colors.exit_code_success.base),
+            AgentActivity::Blocked => Some(self.style.colors.text_unselected.emphasis_0),
+            AgentActivity::Idle => self.style.colors.frame_unselected.map(|frame| frame.base),
+            AgentActivity::Done => Some(self.style.colors.exit_code_success.base),
+            AgentActivity::Error => Some(self.style.colors.exit_code_error.base),
+        }
+    }
+
     /// A colored badge showing the state of the AI agent running in the pane,
     /// eg. "● claude" (green when working, orange when waiting for input,
     /// dimmed when idle).
     fn agent_badge(&self, max_length: usize) -> Option<(Vec<TerminalCharacter>, usize)> {
         let status = self.agent_status.as_ref()?;
-        let (symbol, label, color) = match status.activity {
-            AgentActivity::Working => ("●", "", Some(self.style.colors.exit_code_success.base)),
-            AgentActivity::Blocked => (
-                "●",
-                " needs input",
-                Some(self.style.colors.text_unselected.emphasis_0),
-            ),
-            AgentActivity::Idle => (
-                "○",
-                " idle",
-                self.style.colors.frame_unselected.map(|frame| frame.base),
-            ),
-        };
-        let text = format!(" {} {}{} ", symbol, status.name, label);
+        let color = self.agent_badge_color(status.activity);
+        let text = format!(" {} ", status.badge_text());
+        let width = text.width();
+        if width <= max_length {
+            Some((foreground_color(&text, color), width))
+        } else {
+            None
+        }
+    }
+
+    fn agent_badge_for_stack(&self, max_length: usize) -> Option<(Vec<TerminalCharacter>, usize)> {
+        let status = self.agent_status.as_ref()?;
+        let color = self.agent_badge_color(status.activity);
+        let text = format!("{} ", status.badge_text());
         let width = text.width();
         if width <= max_length {
             Some((foreground_color(&text, color), width))
@@ -813,10 +824,15 @@ impl PaneFrame {
         let inner_width = entry
             .width
             .min(usable_cols.saturating_sub(marker_width + corner_overhead));
-        let content = if entry.label.width() <= inner_width {
+        let (badge_part, badge_length) = self
+            .agent_badge_for_stack(inner_width)
+            .map(|(chars, len)| (Some(chars), len))
+            .unwrap_or((None, 0));
+        let content_budget = inner_width.saturating_sub(badge_length);
+        let content = if entry.label.width() <= content_budget {
             entry.label.clone()
         } else {
-            let truncation_budget = inner_width.saturating_sub(1);
+            let truncation_budget = content_budget.saturating_sub(1);
             let mut truncated = String::new();
             for character in entry.label.chars() {
                 if truncated.width() + character.width().unwrap_or(0) > truncation_budget {
@@ -859,8 +875,11 @@ impl PaneFrame {
         for _ in 0..corner_padding {
             line.push(EMPTY_TERMINAL_CHARACTER);
         }
+        if let Some(mut badge_characters) = badge_part {
+            line.append(&mut badge_characters);
+        }
         line.append(&mut style_entry_text(&content));
-        let content_padding = inner_width.saturating_sub(content.width());
+        let content_padding = inner_width.saturating_sub(badge_length + content.width());
         for _ in 0..content_padding {
             line.push(EMPTY_TERMINAL_CHARACTER);
         }
@@ -1560,6 +1579,110 @@ mod tests {
             top_row.contains("● claude") && top_row.contains("my pane"),
             "top row was: {:?}",
             top_row
+        );
+    }
+
+    #[test]
+    fn agent_badge_done_and_error() {
+        let mut frame = pane_frame_with(false, false, 60);
+        frame.title = "my pane".into();
+        frame.set_agent_status(Some(AgentStatus {
+            name: "pi".into(),
+            activity: AgentActivity::Done,
+        }));
+        let (chunks, _) = frame.render().unwrap();
+        let top_row: String = chunks
+            .iter()
+            .filter(|chunk| chunk.y == 0)
+            .flat_map(|chunk| chunk.terminal_characters.iter().map(|tc| tc.character))
+            .collect();
+        assert!(
+            top_row.contains("✓ pi done") && top_row.contains("my pane"),
+            "top row was: {:?}",
+            top_row
+        );
+
+        let mut frame = pane_frame_with(false, false, 60);
+        frame.title = "my pane".into();
+        frame.set_agent_status(Some(AgentStatus {
+            name: "rsync".into(),
+            activity: AgentActivity::Error,
+        }));
+        let (chunks, _) = frame.render().unwrap();
+        let top_row: String = chunks
+            .iter()
+            .filter(|chunk| chunk.y == 0)
+            .flat_map(|chunk| chunk.terminal_characters.iter().map(|tc| tc.character))
+            .collect();
+        assert!(
+            top_row.contains("✗ rsync error") && top_row.contains("my pane"),
+            "top row was: {:?}",
+            top_row
+        );
+
+        // Empty name fallback
+        let mut frame = pane_frame_with(false, false, 60);
+        frame.title = "my pane".into();
+        frame.set_agent_status(Some(AgentStatus {
+            name: "".into(),
+            activity: AgentActivity::Done,
+        }));
+        let (chunks, _) = frame.render().unwrap();
+        let top_row: String = chunks
+            .iter()
+            .filter(|chunk| chunk.y == 0)
+            .flat_map(|chunk| chunk.terminal_characters.iter().map(|tc| tc.character))
+            .collect();
+        assert!(
+            top_row.contains("✓ done") && top_row.contains("my pane"),
+            "top row was: {:?}",
+            top_row
+        );
+    }
+
+    #[test]
+    fn agent_badge_appears_in_stack_list_entry() {
+        let mut frame = pane_frame_with(false, false, 80);
+        frame.title = "my pane".into();
+        frame.set_agent_status(Some(AgentStatus {
+            name: "pi".into(),
+            activity: AgentActivity::Working,
+        }));
+        let entry = StackListEntry {
+            width: 30,
+            label: "my pane".into(),
+            is_selected: true,
+            stack_is_focused: true,
+            is_emphasized: false,
+        };
+        let line = frame.render_stack_list_entry(&entry);
+        let text = characters_to_string(&line);
+        assert!(
+            text.contains("● pi") && text.contains("my pane"),
+            "stack list entry line was: {:?}",
+            text
+        );
+
+        // Test with different state (e.g. Done)
+        let mut frame_done = pane_frame_with(false, false, 80);
+        frame_done.title = "another pane".into();
+        frame_done.set_agent_status(Some(AgentStatus {
+            name: "codex".into(),
+            activity: AgentActivity::Done,
+        }));
+        let entry_done = StackListEntry {
+            width: 30,
+            label: "another pane".into(),
+            is_selected: false,
+            stack_is_focused: false,
+            is_emphasized: false,
+        };
+        let line_done = frame_done.render_stack_list_entry(&entry_done);
+        let text_done = characters_to_string(&line_done);
+        assert!(
+            text_done.contains("✓ codex done") && text_done.contains("another pane"),
+            "stack list entry done line was: {:?}",
+            text_done
         );
     }
 

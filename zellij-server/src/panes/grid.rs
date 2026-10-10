@@ -661,6 +661,23 @@ struct KittyRowSnapshot {
     split_rows: u64,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProgramState {
+    Idle,
+    Working,
+    Done,
+    Blocked,
+    Error,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProgramStatus {
+    pub state: ProgramState,
+    pub app: Option<String>,
+    pub kind: Option<String>,
+    pub msg: Option<String>,
+}
+
 #[derive(Clone)]
 pub struct Grid {
     pub(crate) lines_above: VecDeque<Row>,
@@ -728,6 +745,7 @@ pub struct Grid {
     /// later routed back to this pane's pty.
     pub pending_forwarded_queries: Vec<crate::host_query::HostQuery>,
     pub pending_nested_session_messages: Vec<NestedSessionMessage>,
+    pub program_status: Option<ProgramStatus>,
     ui_component_bytes: Option<Vec<u8>>,
     nested_frame_bytes: Option<Vec<u8>>,
     style: Style,
@@ -1079,6 +1097,7 @@ impl Grid {
             pending_desktop_notifications: Vec::new(),
             pending_forwarded_queries: Vec::new(),
             pending_nested_session_messages: Vec::new(),
+            program_status: None,
             ui_component_bytes: None,
             nested_frame_bytes: None,
             style,
@@ -2619,6 +2638,7 @@ impl Grid {
         let kitty_image_store = self.kitty_grid.kitty_image_store.clone();
         self.kitty_grid = KittyGrid::new(self.character_cell_size.clone(), kitty_image_store);
         self.kitty_parser.abort_pending();
+        self.program_status = None;
     }
     fn set_preceding_character(&mut self, terminal_character: TerminalCharacter) {
         self.preceding_char = Some(terminal_character);
@@ -3225,6 +3245,90 @@ impl Grid {
     }
     fn set_title(&mut self, title: String) {
         self.title = Some(title);
+    }
+    fn handle_osc_7501(&mut self, payload: &str) {
+        let mut parsed_state = None;
+        let mut parsed_app = None;
+        let mut parsed_kind = None;
+        let mut parsed_msg = None;
+        let mut is_clear = false;
+        let mut invalid = false;
+
+        for pair in payload.split(':') {
+            let pair = pair.trim();
+            if pair.is_empty() {
+                continue;
+            }
+            if let Some((k, v)) = pair.split_once('=') {
+                let key = k.trim();
+                let val = v.trim();
+                match key {
+                    "state" => match val {
+                        "idle" => parsed_state = Some(ProgramState::Idle),
+                        "working" => parsed_state = Some(ProgramState::Working),
+                        "done" => parsed_state = Some(ProgramState::Done),
+                        "blocked" => parsed_state = Some(ProgramState::Blocked),
+                        "error" => parsed_state = Some(ProgramState::Error),
+                        "clear" => is_clear = true,
+                        _ => invalid = true,
+                    },
+                    "app" => {
+                        parsed_app = if val.is_empty() {
+                            None
+                        } else {
+                            Some(val.to_string())
+                        };
+                    },
+                    "kind" => {
+                        parsed_kind = if val.is_empty() {
+                            None
+                        } else {
+                            Some(val.to_string())
+                        };
+                    },
+                    "msg" => match BASE64_DECODER.decode(val.as_bytes()) {
+                        Ok(bytes) => match String::from_utf8(bytes) {
+                            Ok(msg) => {
+                                let has_ctrl = msg.chars().any(|c| {
+                                    let u = c as u32;
+                                    (u <= 0x1f) || (u == 0x7f) || (0x80..=0x9f).contains(&u)
+                                });
+                                if has_ctrl {
+                                    invalid = true;
+                                } else {
+                                    parsed_msg = Some(msg);
+                                }
+                            },
+                            Err(_) => invalid = true,
+                        },
+                        Err(_) => invalid = true,
+                    },
+                    _ => {
+                        // Unknown keys MUST be ignored per protocol spec.
+                    },
+                }
+            }
+        }
+
+        if is_clear {
+            self.program_status = None;
+            self.mark_for_rerender();
+            return;
+        }
+
+        if invalid {
+            return;
+        }
+
+        if let Some(state) = parsed_state {
+            self.program_status = Some(ProgramStatus {
+                state,
+                app: parsed_app,
+                kind: parsed_kind,
+                msg: parsed_msg,
+            });
+            self.mark_for_rerender();
+        }
     }
     fn push_current_title_to_stack(&mut self) {
         if self.title_stack.len() > MAX_TITLE_STACK_SIZE {
@@ -4335,6 +4439,24 @@ impl Perform for Grid {
                         // Store raw payload and terminator; namespacing applied at Tab level
                         self.pending_desktop_notifications
                             .push((payload, terminator.to_string()));
+                    }
+                }
+            },
+
+            b"7501" => {
+                if params.len() > 1 {
+                    let payload = params
+                        .get(1..)
+                        .unwrap_or_default()
+                        .iter()
+                        .flat_map(|x| str::from_utf8(x))
+                        .collect::<Vec<&str>>()
+                        .join(";");
+                    if payload.starts_with('?') {
+                        let reply = format!("\u{1b}]7501;?{}", terminator);
+                        self.pending_messages_to_pty.push(reply.as_bytes().to_vec());
+                    } else {
+                        self.handle_osc_7501(&payload);
                     }
                 }
             },
@@ -5619,5 +5741,216 @@ mod osc7_parser_tests {
     fn osc7_parser_rejects_non_utf8_input() {
         let raw = &[0xFFu8, 0xFE, 0xFD];
         assert_eq!(parse_osc7_path(raw), None);
+    }
+}
+
+#[cfg(test)]
+mod osc7501_tests {
+    use super::*;
+    use vte::Parser;
+
+    fn create_test_grid() -> Grid {
+        let sixel_image_store = Rc::new(RefCell::new(SixelImageStore::default()));
+        let kitty_image_store = Rc::new(RefCell::new(KittyImageStore::default()));
+        let terminal_emulator_color_codes = Rc::new(RefCell::new(HashMap::new()));
+        let terminal_emulator_colors = Rc::new(RefCell::new(Palette::default()));
+        let link_handler = Rc::new(RefCell::new(LinkHandler::new()));
+        let character_cell_size = Rc::new(RefCell::new(None));
+        Grid::new(
+            24,
+            80,
+            terminal_emulator_colors,
+            terminal_emulator_color_codes,
+            link_handler,
+            character_cell_size,
+            sixel_image_store,
+            kitty_image_store,
+            Style::default(),
+            false,
+            false,
+            false,
+            false,
+            false,
+        )
+    }
+
+    #[test]
+    fn test_osc7501_all_states_st_and_bel() {
+        let mut grid = create_test_grid();
+        let mut parser = Parser::new();
+
+        // Working with ST terminator
+        parser.advance(&mut grid, b"\x1b]7501;state=working:app=claude\x1b\\");
+        assert_eq!(
+            grid.program_status,
+            Some(ProgramStatus {
+                state: ProgramState::Working,
+                app: Some("claude".into()),
+                kind: None,
+                msg: None,
+            })
+        );
+
+        // Blocked with BEL terminator
+        parser.advance(
+            &mut grid,
+            b"\x1b]7501;state=blocked:kind=permission:app=terraform:msg=QXBwbHkgMyB0byBhZGQ/\x07",
+        );
+        assert_eq!(
+            grid.program_status,
+            Some(ProgramStatus {
+                state: ProgramState::Blocked,
+                app: Some("terraform".into()),
+                kind: Some("permission".into()),
+                msg: Some("Apply 3 to add?".into()),
+            })
+        );
+
+        // Done
+        parser.advance(&mut grid, b"\x1b]7501;state=done:app=cargo\x1b\\");
+        assert_eq!(
+            grid.program_status,
+            Some(ProgramStatus {
+                state: ProgramState::Done,
+                app: Some("cargo".into()),
+                kind: None,
+                msg: None,
+            })
+        );
+
+        // Error
+        parser.advance(&mut grid, b"\x1b]7501;state=error:app=rsync\x1b\\");
+        assert_eq!(
+            grid.program_status,
+            Some(ProgramStatus {
+                state: ProgramState::Error,
+                app: Some("rsync".into()),
+                kind: None,
+                msg: None,
+            })
+        );
+
+        // Idle
+        parser.advance(&mut grid, b"\x1b]7501;state=idle\x1b\\");
+        assert_eq!(
+            grid.program_status,
+            Some(ProgramStatus {
+                state: ProgramState::Idle,
+                app: None,
+                kind: None,
+                msg: None,
+            })
+        );
+
+        // Clear
+        parser.advance(&mut grid, b"\x1b]7501;state=clear\x1b\\");
+        assert_eq!(grid.program_status, None);
+    }
+
+    #[test]
+    fn test_osc7501_missing_or_invalid_state_ignored() {
+        let mut grid = create_test_grid();
+        let mut parser = Parser::new();
+
+        parser.advance(&mut grid, b"\x1b]7501;state=working:app=claude\x1b\\");
+        assert!(grid.program_status.is_some());
+
+        // Missing state
+        parser.advance(&mut grid, b"\x1b]7501;app=different\x1b\\");
+        assert_eq!(
+            grid.program_status.as_ref().unwrap().state,
+            ProgramState::Working
+        );
+        assert_eq!(
+            grid.program_status.as_ref().unwrap().app.as_deref(),
+            Some("claude")
+        );
+
+        // Invalid state
+        parser.advance(&mut grid, b"\x1b]7501;state=foo:app=other\x1b\\");
+        assert_eq!(
+            grid.program_status.as_ref().unwrap().state,
+            ProgramState::Working
+        );
+        assert_eq!(
+            grid.program_status.as_ref().unwrap().app.as_deref(),
+            Some("claude")
+        );
+    }
+
+    #[test]
+    fn test_osc7501_invalid_base64_or_control_chars_ignored() {
+        let mut grid = create_test_grid();
+        let mut parser = Parser::new();
+
+        parser.advance(&mut grid, b"\x1b]7501;state=working:app=claude\x1b\\");
+
+        // Invalid base64
+        parser.advance(
+            &mut grid,
+            b"\x1b]7501;state=blocked:msg=not_base64!!@@\x1b\\",
+        );
+        assert_eq!(
+            grid.program_status.as_ref().unwrap().state,
+            ProgramState::Working
+        );
+
+        // Control char in decoded msg (newline \n -> aGVsbG8K is "hello\n")
+        parser.advance(&mut grid, b"\x1b]7501;state=blocked:msg=aGVsbG8K\x1b\\");
+        assert_eq!(
+            grid.program_status.as_ref().unwrap().state,
+            ProgramState::Working
+        );
+    }
+
+    #[test]
+    fn test_osc7501_reset_clears_status() {
+        let mut grid = create_test_grid();
+        let mut parser = Parser::new();
+
+        parser.advance(&mut grid, b"\x1b]7501;state=done:app=cargo\x1b\\");
+        assert!(grid.program_status.is_some());
+
+        // RIS (\x1bc)
+        parser.advance(&mut grid, b"\x1bc");
+        assert_eq!(grid.program_status, None);
+    }
+
+    #[test]
+    fn test_osc7501_feature_query_replies_and_preserves_status() {
+        let mut grid = create_test_grid();
+        let mut parser = Parser::new();
+        let pi_pattern = regex::Regex::new(r"^\x1b\]7501;\?[^\x07\x1b]*(?:\x07|\x1b\\)$").unwrap();
+
+        // 1. Initial query with ST terminator
+        parser.advance(&mut grid, b"\x1b]7501;?\x1b\\");
+        assert_eq!(grid.pending_messages_to_pty.len(), 1);
+        let reply_st = String::from_utf8(grid.pending_messages_to_pty.remove(0)).unwrap();
+        assert_eq!(reply_st, "\x1b]7501;?\x1b\\");
+        assert!(pi_pattern.is_match(&reply_st));
+        assert_eq!(grid.program_status, None);
+
+        // Set status
+        parser.advance(&mut grid, b"\x1b]7501;state=working:app=claude\x1b\\");
+        let initial_status = grid.program_status.clone();
+        assert!(initial_status.is_some());
+
+        // 2. Query with BEL terminator
+        parser.advance(&mut grid, b"\x1b]7501;?\x07");
+        assert_eq!(grid.pending_messages_to_pty.len(), 1);
+        let reply_bel = String::from_utf8(grid.pending_messages_to_pty.remove(0)).unwrap();
+        assert_eq!(reply_bel, "\x1b]7501;?\x07");
+        assert!(pi_pattern.is_match(&reply_bel));
+
+        // Status is unchanged
+        assert_eq!(grid.program_status, initial_status);
+
+        // 3. Query with additional key-value payload (e.g. "?key=val")
+        parser.advance(&mut grid, b"\x1b]7501;?version=1\x1b\\");
+        assert_eq!(grid.pending_messages_to_pty.len(), 1);
+        let reply_ext = String::from_utf8(grid.pending_messages_to_pty.remove(0)).unwrap();
+        assert_eq!(reply_ext, "\x1b]7501;?\x1b\\");
+        assert!(pi_pattern.is_match(&reply_ext));
+        assert_eq!(grid.program_status, initial_status);
     }
 }

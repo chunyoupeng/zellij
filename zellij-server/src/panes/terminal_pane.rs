@@ -8,7 +8,7 @@ use crate::panes::kitty_graphics::{
 use crate::panes::sixel::SixelImageStore;
 use crate::panes::LinkHandler;
 use crate::panes::{
-    grid::Grid,
+    grid::{Grid, ProgramState},
     nested_session_modal::GuestModalShortcuts,
     terminal_character::{render_first_run_banner, TerminalCharacter, EMPTY_TERMINAL_CHARACTER},
 };
@@ -619,7 +619,7 @@ impl Pane for TerminalPane {
             frame_params,
         )
         .is_pinned(is_pinned);
-        frame.set_agent_status(self.agent_status.clone());
+        frame.set_agent_status(self.effective_agent_status());
         if let Some((exit_status, is_first_run, _run_command)) = &self.is_held {
             if *is_first_run {
                 frame.indicate_first_run();
@@ -1124,6 +1124,7 @@ impl Pane for TerminalPane {
         self.grid.is_alternate_mode_active()
     }
     fn hold(&mut self, exit_status: Option<i32>, is_first_run: bool, run_command: RunCommand) {
+        self.grid.program_status = None;
         self.invoked_with = Some(Run::Command(run_command.clone()));
         self.is_held = Some((exit_status, is_first_run, run_command));
         if let Some(notification_end) = self.notification_end.as_mut() {
@@ -1195,6 +1196,9 @@ impl Pane for TerminalPane {
     }
     fn stack_list_entry_label(&self) -> String {
         self.title_with_bell_indicator(self.current_title())
+    }
+    fn effective_agent_status(&self) -> Option<AgentStatus> {
+        self.effective_agent_status()
     }
     fn custom_title(&self) -> Option<String> {
         if self.pane_name.is_empty() {
@@ -1384,6 +1388,29 @@ impl Pane for TerminalPane {
 }
 
 impl TerminalPane {
+    pub(crate) fn effective_agent_status(&self) -> Option<AgentStatus> {
+        if let Some(status) = &self.grid.program_status {
+            let activity = match status.state {
+                ProgramState::Working => AgentActivity::Working,
+                ProgramState::Blocked => AgentActivity::Blocked,
+                ProgramState::Idle => AgentActivity::Idle,
+                ProgramState::Done => AgentActivity::Done,
+                ProgramState::Error => AgentActivity::Error,
+            };
+            let name = match &status.app {
+                Some(app) => app.clone(),
+                None => self
+                    .agent_status
+                    .as_ref()
+                    .map(|s| s.name.clone())
+                    .unwrap_or_default(),
+            };
+            Some(AgentStatus { name, activity })
+        } else {
+            self.agent_status.clone()
+        }
+    }
+
     fn title_with_bell_indicator(&self, title: String) -> String {
         if self.has_bell_notification {
             format!("{} [!]", title)

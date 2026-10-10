@@ -23,12 +23,40 @@ pub enum AgentActivity {
     Blocked,
     /// The agent is quiet, waiting for the user's next prompt.
     Idle,
+    /// The program completed execution.
+    Done,
+    /// The program halted due to an error.
+    Error,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgentStatus {
     pub name: String,
     pub activity: AgentActivity,
+}
+
+impl AgentStatus {
+    pub fn badge_text(&self) -> String {
+        let (symbol, label) = match self.activity {
+            AgentActivity::Working => ("●", ""),
+            AgentActivity::Blocked => ("●", " needs input"),
+            AgentActivity::Idle => ("○", " idle"),
+            AgentActivity::Done => ("✓", " done"),
+            AgentActivity::Error => ("✗", " error"),
+        };
+        if self.name.is_empty() {
+            let state_desc = match self.activity {
+                AgentActivity::Working => "working",
+                AgentActivity::Blocked => "needs input",
+                AgentActivity::Idle => "idle",
+                AgentActivity::Done => "done",
+                AgentActivity::Error => "error",
+            };
+            format!("{} {}", symbol, state_desc)
+        } else {
+            format!("{} {}{}", symbol, self.name, label)
+        }
+    }
 }
 
 /// Binary basenames recognized as AI coding agents.
