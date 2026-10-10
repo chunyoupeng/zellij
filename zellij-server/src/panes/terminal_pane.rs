@@ -763,34 +763,11 @@ impl Pane for TerminalPane {
         self.grid.clear_screen()
     }
     fn scroll_up(&mut self, count: usize, _client_id: ClientId) {
-        if self.copy_session.is_some() {
-            for _ in 0..count {
-                let can_move = !self.grid.lines_above.is_empty()
-                    && self.grid.viewport.len() == self.grid.height;
-                self.grid.move_viewport_up(1);
-                if can_move {
-                    self.adjust_copy_session_for_scroll(1);
-                }
-            }
-        } else {
-            self.grid.move_viewport_up(count);
-        }
+        self.grid.move_viewport_up(count);
         self.set_should_render(true);
     }
     fn scroll_down(&mut self, count: usize, _client_id: ClientId) {
-        if self.copy_session.is_some() {
-            for _ in 0..count {
-                let can_move = !self.grid.lines_below.is_empty()
-                    && self.grid.viewport.len() == self.grid.height
-                    && !self.grid.viewport.is_empty();
-                self.grid.move_viewport_down(1);
-                if can_move {
-                    self.adjust_copy_session_for_scroll(-1);
-                }
-            }
-        } else {
-            self.grid.move_viewport_down(count);
-        }
+        self.grid.move_viewport_down(count);
         self.set_should_render(true);
     }
     fn clear_scroll(&mut self) {
@@ -1002,7 +979,10 @@ impl Pane for TerminalPane {
         TerminalPane::toggle_copy_visual(self);
     }
 
-    fn handle_copy_mode_key_active(&mut self, key: CopyModeKey) -> CopyModeActiveResult {
+    fn handle_copy_mode_key_active(
+        &mut self,
+        key: CopyModeKey,
+    ) -> CopyModeActiveResult {
         TerminalPane::handle_copy_mode_key_active(self, key)
     }
 
@@ -1499,12 +1479,7 @@ impl TerminalPane {
     }
 
     pub fn enter_copy_mode(&mut self) {
-        let cursor = self
-            .grid
-            .cursor_coordinates()
-            .map(|(x, y, _)| Position::new(y as i32, x as u16))
-            .unwrap_or_else(|| Position::new(0, 0));
-        let session = CopySession::new_at_position(cursor);
+        let session = CopySession::new_at_origin();
         sync_selection(&mut self.grid, &session);
         self.copy_session = Some(session);
         self.set_should_render(true);
@@ -1547,18 +1522,6 @@ impl TerminalPane {
             },
         }
         result
-    }
-
-    fn adjust_copy_session_for_scroll(&mut self, line_delta: isize) {
-        let Some(session) = self.copy_session.as_mut() else {
-            return;
-        };
-        // Grid::scroll_* moves the existing selection with the text. Keep both
-        // copy-mode positions in the same coordinate space before re-syncing.
-        session.cursor.line.0 = session.cursor.line.0.saturating_add(line_delta);
-        if let Some(anchor) = session.visual_anchor.as_mut() {
-            anchor.line.0 = anchor.line.0.saturating_add(line_delta);
-        }
     }
 
     pub fn resync_copy_selection_after_scroll(&mut self) {

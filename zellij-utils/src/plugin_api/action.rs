@@ -2013,7 +2013,6 @@ impl TryFrom<Action> for ProtobufAction {
             | Action::CopyModePageScroll { .. }
             | Action::CopyModeHalfPageScroll { .. }
             | Action::CopyModeLineStart
-            | Action::CopyModeLineSelect
             | Action::CopyModeLineEnd
             | Action::CopyModeWordStart
             | Action::CopyModeWordEnd

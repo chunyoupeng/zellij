@@ -417,7 +417,6 @@ pub enum Action {
         direction: Direction,
     },
     CopyModeLineStart,
-    CopyModeLineSelect,
     CopyModeLineEnd,
     CopyModeWordStart,
     CopyModeWordEnd,

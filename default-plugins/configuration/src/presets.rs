@@ -74,19 +74,15 @@ keybinds clear-defaults=true {{
     }}
     scroll {{
         bind "s" {{ SwitchToMode "Normal"; }}
-        bind "e" {{ CopyModeWordEnd; }}
+        bind "e" {{ EditScrollback; SwitchToMode "Locked"; }}
         bind "f" {{ SwitchToMode "EnterSearch"; SearchInput 0; }}
         bind "Ctrl c" {{ ScrollToBottom; SwitchToMode "Locked"; }}
-        bind "j" "Down" {{ CopyModeMove "down"; }}
-        bind "k" "Up" {{ CopyModeMove "up"; }}
-        bind "Ctrl f" "PageDown" {{ CopyModePageScroll "down"; }}
-        bind "Ctrl b" "PageUp" {{ CopyModePageScroll "up"; }}
-        bind "d" {{ CopyModeHalfPageScroll "down"; }}
-        bind "u" {{ CopyModeHalfPageScroll "up"; }}
-        bind "w" {{ CopyModeWordStart; }}
-        bind "b" {{ CopyModeWordBack; }}
-        bind "0" {{ CopyModeLineStart; }}
-        bind "$" {{ CopyModeLineEnd; }}
+        bind "j" "Down" {{ ScrollDown; }}
+        bind "k" "Up" {{ ScrollUp; }}
+        bind "Ctrl f" "PageDown" "Right" "l" {{ PageScrollDown; }}
+        bind "Ctrl b" "PageUp" "Left" "h" {{ PageScrollUp; }}
+        bind "d" {{ HalfPageScrollDown; }}
+        bind "u" {{ HalfPageScrollUp; }}
         bind "Alt left" {{ MoveFocusOrTab "left"; SwitchToMode "locked"; }}
         bind "Alt down" {{ MoveFocus "down"; SwitchToMode "locked"; }}
         bind "Alt up" {{ MoveFocus "up"; SwitchToMode "locked"; }}
@@ -95,13 +91,6 @@ keybinds clear-defaults=true {{
         bind "Alt j" {{ MoveFocus "down"; SwitchToMode "locked"; }}
         bind "Alt k" {{ MoveFocus "up"; SwitchToMode "locked"; }}
         bind "Alt l" {{ MoveFocusOrTab "right"; SwitchToMode "locked"; }}
-        bind "h" "Left" {{ CopyModeMove "left"; }}
-        bind "l" "Right" {{ CopyModeMove "right"; }}
-        // Vim-style selection: v selects characters, V selects complete lines.
-        bind "v" {{ ToggleCopyMode; }}
-        bind "V" {{ CopyModeLineSelect; }}
-        bind "y" {{ CopyModeYank; }}
-        bind "Esc" {{ CopyModeCancel; }}
     }}
     search {{
         bind "Ctrl c" {{ ScrollToBottom; SwitchToMode "Locked"; }}
@@ -310,19 +299,15 @@ keybinds clear-defaults=true {{
     }}
     scroll {{
         bind "{primary_modifier} s" {{ SwitchToMode "Normal"; }}
-        bind "e" {{ CopyModeWordEnd; }}
+        bind "e" {{ EditScrollback; SwitchToMode "Normal"; }}
         bind "s" {{ SwitchToMode "EnterSearch"; SearchInput 0; }}
         bind "Ctrl c" {{ ScrollToBottom; SwitchToMode "Normal"; }}
-        bind "j" "Down" {{ CopyModeMove "down"; }}
-        bind "k" "Up" {{ CopyModeMove "up"; }}
-        bind "Ctrl f" "PageDown" {{ CopyModePageScroll "down"; }}
-        bind "Ctrl b" "PageUp" {{ CopyModePageScroll "up"; }}
-        bind "d" {{ CopyModeHalfPageScroll "down"; }}
-        bind "u" {{ CopyModeHalfPageScroll "up"; }}
-        bind "w" {{ CopyModeWordStart; }}
-        bind "b" {{ CopyModeWordBack; }}
-        bind "0" {{ CopyModeLineStart; }}
-        bind "$" {{ CopyModeLineEnd; }}
+        bind "j" "Down" {{ ScrollDown; }}
+        bind "k" "Up" {{ ScrollUp; }}
+        bind "Ctrl f" "PageDown" "Right" "l" {{ PageScrollDown; }}
+        bind "Ctrl b" "PageUp" "Left" "h" {{ PageScrollUp; }}
+        bind "d" {{ HalfPageScrollDown; }}
+        bind "u" {{ HalfPageScrollUp; }}
         bind "{secondary_modifier} left" {{ MoveFocusOrTab "left"; SwitchToMode "normal"; }}
         bind "{secondary_modifier} down" {{ MoveFocus "down"; SwitchToMode "normal"; }}
         bind "{secondary_modifier} up" {{ MoveFocus "up"; SwitchToMode "normal"; }}
@@ -331,13 +316,6 @@ keybinds clear-defaults=true {{
         bind "{secondary_modifier} j" {{ MoveFocus "down"; SwitchToMode "normal"; }}
         bind "{secondary_modifier} k" {{ MoveFocus "up"; SwitchToMode "normal"; }}
         bind "{secondary_modifier} l" {{ MoveFocusOrTab "right"; SwitchToMode "normal"; }}
-        bind "h" "Left" {{ CopyModeMove "left"; }}
-        bind "l" "Right" {{ CopyModeMove "right"; }}
-        // Vim-style selection: v selects characters, V selects complete lines.
-        bind "v" {{ ToggleCopyMode; }}
-        bind "V" {{ CopyModeLineSelect; }}
-        bind "y" {{ CopyModeYank; }}
-        bind "Esc" {{ CopyModeCancel; }}
     }}
     search {{
         bind "{primary_modifier} s" {{ SwitchToMode "Normal"; }}
@@ -554,16 +532,12 @@ keybinds clear-defaults=true {{
         bind "Tab" {{ ToggleTab; }}
     }}
     scroll {{
-        bind "e" {{ CopyModeWordEnd; }}
+        bind "e" {{ EditScrollback; SwitchToMode "Normal"; }}
         bind "s" {{ SwitchToMode "EnterSearch"; SearchInput 0; }}
-        bind "j" "Down" {{ CopyModeMove "down"; }}
-        bind "k" "Up" {{ CopyModeMove "up"; }}
-        bind "d" {{ CopyModeHalfPageScroll "down"; }}
-        bind "u" {{ CopyModeHalfPageScroll "up"; }}
-        bind "w" {{ CopyModeWordStart; }}
-        bind "b" {{ CopyModeWordBack; }}
-        bind "0" {{ CopyModeLineStart; }}
-        bind "$" {{ CopyModeLineEnd; }}
+        bind "j" "Down" {{ ScrollDown; }}
+        bind "k" "Up" {{ ScrollUp; }}
+        bind "d" {{ HalfPageScrollDown; }}
+        bind "u" {{ HalfPageScrollUp; }}
         bind "{secondary_modifier} left" {{ MoveFocusOrTab "left"; SwitchToMode "normal"; }}
         bind "{secondary_modifier} down" {{ MoveFocus "down"; SwitchToMode "normal"; }}
         bind "{secondary_modifier} up" {{ MoveFocus "up"; SwitchToMode "normal"; }}
@@ -572,13 +546,6 @@ keybinds clear-defaults=true {{
         bind "{secondary_modifier} j" {{ MoveFocus "down"; SwitchToMode "normal"; }}
         bind "{secondary_modifier} k" {{ MoveFocus "up"; SwitchToMode "normal"; }}
         bind "{secondary_modifier} l" {{ MoveFocusOrTab "right"; SwitchToMode "normal"; }}
-        bind "h" "Left" {{ CopyModeMove "left"; }}
-        bind "l" "Right" {{ CopyModeMove "right"; }}
-        // Vim-style selection: v selects characters, V selects complete lines.
-        bind "v" {{ ToggleCopyMode; }}
-        bind "V" {{ CopyModeLineSelect; }}
-        bind "y" {{ CopyModeYank; }}
-        bind "Esc" {{ CopyModeCancel; }}
     }}
     search {{
         bind "Ctrl c" {{ ScrollToBottom; SwitchToMode "Normal"; }}
@@ -775,26 +742,15 @@ keybinds clear-defaults=true {{
     }}
     scroll {{
         bind "{primary_modifier} s" {{ SwitchToMode "Normal"; }}
-        bind "e" {{ CopyModeWordEnd; }}
+        bind "e" {{ EditScrollback; SwitchToMode "Normal"; }}
         bind "s" {{ SwitchToMode "EnterSearch"; SearchInput 0; }}
         bind "Ctrl c" {{ ScrollToBottom; SwitchToMode "Normal"; }}
-        bind "j" "Down" {{ CopyModeMove "down"; }}
-        bind "k" "Up" {{ CopyModeMove "up"; }}
-        bind "Ctrl f" "PageDown" {{ CopyModePageScroll "down"; }}
-        bind "Ctrl b" "PageUp" {{ CopyModePageScroll "up"; }}
-        bind "d" {{ CopyModeHalfPageScroll "down"; }}
-        bind "u" {{ CopyModeHalfPageScroll "up"; }}
-        bind "w" {{ CopyModeWordStart; }}
-        bind "b" {{ CopyModeWordBack; }}
-        bind "0" {{ CopyModeLineStart; }}
-        bind "$" {{ CopyModeLineEnd; }}
-        bind "h" "Left" {{ CopyModeMove "left"; }}
-        bind "l" "Right" {{ CopyModeMove "right"; }}
-        // Vim-style selection: v selects characters, V selects complete lines.
-        bind "v" {{ ToggleCopyMode; }}
-        bind "V" {{ CopyModeLineSelect; }}
-        bind "y" {{ CopyModeYank; }}
-        bind "Esc" {{ CopyModeCancel; }}
+        bind "j" "Down" {{ ScrollDown; }}
+        bind "k" "Up" {{ ScrollUp; }}
+        bind "Ctrl f" "PageDown" "Right" "l" {{ PageScrollDown; }}
+        bind "Ctrl b" "PageUp" "Left" "h" {{ PageScrollUp; }}
+        bind "d" {{ HalfPageScrollDown; }}
+        bind "u" {{ HalfPageScrollUp; }}
     }}
     search {{
         bind "{primary_modifier} s" {{ SwitchToMode "Normal"; }}
@@ -997,26 +953,15 @@ keybinds clear-defaults=true {{
         bind "Tab" {{ ToggleTab; }}
     }}
     scroll {{
-        bind "e" {{ CopyModeWordEnd; }}
+        bind "e" {{ EditScrollback; SwitchToMode "Normal"; }}
         bind "s" {{ SwitchToMode "EnterSearch"; SearchInput 0; }}
         bind "Ctrl c" {{ ScrollToBottom; SwitchToMode "Normal"; }}
-        bind "j" "Down" {{ CopyModeMove "down"; }}
-        bind "k" "Up" {{ CopyModeMove "up"; }}
-        bind "Ctrl f" "PageDown" {{ CopyModePageScroll "down"; }}
-        bind "Ctrl b" "PageUp" {{ CopyModePageScroll "up"; }}
-        bind "d" {{ CopyModeHalfPageScroll "down"; }}
-        bind "u" {{ CopyModeHalfPageScroll "up"; }}
-        bind "w" {{ CopyModeWordStart; }}
-        bind "b" {{ CopyModeWordBack; }}
-        bind "0" {{ CopyModeLineStart; }}
-        bind "$" {{ CopyModeLineEnd; }}
-        bind "h" "Left" {{ CopyModeMove "left"; }}
-        bind "l" "Right" {{ CopyModeMove "right"; }}
-        // Vim-style selection: v selects characters, V selects complete lines.
-        bind "v" {{ ToggleCopyMode; }}
-        bind "V" {{ CopyModeLineSelect; }}
-        bind "y" {{ CopyModeYank; }}
-        bind "Esc" {{ CopyModeCancel; }}
+        bind "j" "Down" {{ ScrollDown; }}
+        bind "k" "Up" {{ ScrollUp; }}
+        bind "Ctrl f" "PageDown" "Right" "l" {{ PageScrollDown; }}
+        bind "Ctrl b" "PageUp" "Left" "h" {{ PageScrollUp; }}
+        bind "d" {{ HalfPageScrollDown; }}
+        bind "u" {{ HalfPageScrollUp; }}
     }}
     search {{
         bind "Ctrl c" {{ ScrollToBottom; SwitchToMode "Normal"; }}
@@ -1200,19 +1145,15 @@ keybinds clear-defaults=true {{
     }}
     scroll {{
         bind "{primary_modifier} s" {{ SwitchToMode "Normal"; }}
-        bind "e" {{ CopyModeWordEnd; }}
+        bind "e" {{ EditScrollback; SwitchToMode "Normal"; }}
         bind "s" {{ SwitchToMode "EnterSearch"; SearchInput 0; }}
         bind "Ctrl c" {{ ScrollToBottom; SwitchToMode "Normal"; }}
-        bind "j" "Down" {{ CopyModeMove "down"; }}
-        bind "k" "Up" {{ CopyModeMove "up"; }}
-        bind "Ctrl f" "PageDown" {{ CopyModePageScroll "down"; }}
-        bind "Ctrl b" "PageUp" {{ CopyModePageScroll "up"; }}
-        bind "d" {{ CopyModeHalfPageScroll "down"; }}
-        bind "u" {{ CopyModeHalfPageScroll "up"; }}
-        bind "w" {{ CopyModeWordStart; }}
-        bind "b" {{ CopyModeWordBack; }}
-        bind "0" {{ CopyModeLineStart; }}
-        bind "$" {{ CopyModeLineEnd; }}
+        bind "j" "Down" {{ ScrollDown; }}
+        bind "k" "Up" {{ ScrollUp; }}
+        bind "Ctrl f" "PageDown" "Right" "l" {{ PageScrollDown; }}
+        bind "Ctrl b" "PageUp" "Left" "h" {{ PageScrollUp; }}
+        bind "d" {{ HalfPageScrollDown; }}
+        bind "u" {{ HalfPageScrollUp; }}
         bind "{secondary_modifier} left" {{ MoveFocusOrTab "left"; SwitchToMode "normal"; }}
         bind "{secondary_modifier} down" {{ MoveFocus "down"; SwitchToMode "normal"; }}
         bind "{secondary_modifier} up" {{ MoveFocus "up"; SwitchToMode "normal"; }}
@@ -1221,13 +1162,6 @@ keybinds clear-defaults=true {{
         bind "{secondary_modifier} j" {{ MoveFocus "down"; SwitchToMode "normal"; }}
         bind "{secondary_modifier} k" {{ MoveFocus "up"; SwitchToMode "normal"; }}
         bind "{secondary_modifier} l" {{ MoveFocusOrTab "right"; SwitchToMode "normal"; }}
-        bind "h" "Left" {{ CopyModeMove "left"; }}
-        bind "l" "Right" {{ CopyModeMove "right"; }}
-        // Vim-style selection: v selects characters, V selects complete lines.
-        bind "v" {{ ToggleCopyMode; }}
-        bind "V" {{ CopyModeLineSelect; }}
-        bind "y" {{ CopyModeYank; }}
-        bind "Esc" {{ CopyModeCancel; }}
     }}
     search {{
         bind "{primary_modifier} s" {{ SwitchToMode "Normal"; }}
