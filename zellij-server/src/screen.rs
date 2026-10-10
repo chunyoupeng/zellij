@@ -116,8 +116,14 @@ use zellij_utils::{
     nested_session::{self, NestedSessionCapability, NestedSessionMessage},
 };
 
-use crate::copy_mode::{is_scroll_group, CopyModeKey};
 use crate::mobile_web::MobileWebPrefs;
+
+fn is_scroll_group(mode: InputMode) -> bool {
+    matches!(
+        mode,
+        InputMode::Scroll | InputMode::Search | InputMode::EnterSearch
+    )
+}
 
 #[derive(Debug, Default, PartialEq)]
 enum ImeState {
@@ -664,10 +670,6 @@ pub enum ScreenInstruction {
     ChangeModeForAllClients(InputMode, Option<InputMode>, Option<NotificationEnd>),
     MouseEvent(MouseEvent, ClientId, Option<NotificationEnd>),
     Copy(ClientId, Option<NotificationEnd>),
-    ToggleCopyMode(ClientId, Option<NotificationEnd>),
-    CopyModeKey(CopyModeKey, ClientId, Option<NotificationEnd>),
-    CopyModeYank(ClientId, Option<NotificationEnd>),
-    CopyModeCancel(ClientId, Option<NotificationEnd>),
     AddClient(
         ClientId,
         bool,                // is_web_client
@@ -1262,10 +1264,6 @@ impl From<&ScreenInstruction> for ScreenContext {
             ScreenInstruction::ScrollDownAt(..) => ScreenContext::ScrollDownAt,
             ScreenInstruction::MouseEvent(..) => ScreenContext::MouseEvent,
             ScreenInstruction::Copy(..) => ScreenContext::Copy,
-            ScreenInstruction::ToggleCopyMode(..) => ScreenContext::Copy,
-            ScreenInstruction::CopyModeKey(..) => ScreenContext::Copy,
-            ScreenInstruction::CopyModeYank(..) => ScreenContext::Copy,
-            ScreenInstruction::CopyModeCancel(..) => ScreenContext::Copy,
             ScreenInstruction::ToggleTab(..) => ScreenContext::ToggleTab,
             ScreenInstruction::AddClient(..) => ScreenContext::AddClient,
             ScreenInstruction::RemoveClient(..) => ScreenContext::RemoveClient,
@@ -7030,10 +7028,7 @@ impl Screen {
         if search_related_modes.contains(&previous_mode)
             && !search_related_modes.contains(&mode_info.mode)
         {
-            active_tab!(self, client_id, |tab: &mut Tab| {
-                tab.exit_copy_mode_on_active_pane(client_id);
-                tab.clear_search(client_id);
-            });
+            active_tab!(self, client_id, |tab: &mut Tab| tab.clear_search(client_id));
         }
 
         // IME: engage English while in the scroll group, restore on leave.
@@ -7231,12 +7226,6 @@ impl Screen {
         if old_pane_id == new_pane_id {
             return;
         }
-        // Leaving a pane in copy mode: drop its selection so it doesn't linger.
-        if let Ok(tab) = self.get_active_tab_mut(client_id) {
-            if let Some(pane) = tab.get_pane_with_id_mut(old_pane_id) {
-                pane.exit_copy_mode();
-            }
-        }
         let is_search =
             |mode: InputMode| matches!(mode, InputMode::Search | InputMode::EnterSearch);
         let (current, base_mode) = self.current_mode_for_client(client_id);
@@ -7258,7 +7247,7 @@ impl Screen {
         client_id: ClientId,
         kind: ScrollBufferKind,
     ) -> Result<()> {
-        let in_scroll_group = self.client_in_copy_capable_mode(client_id);
+        let in_scroll_group = self.client_in_scroll_or_search(client_id);
         let was_scrolled = self.active_pane_is_scrolled(client_id);
         if in_scroll_group && !was_scrolled {
             return self.exit_scroll_group_to_default_mode(client_id);
@@ -7283,7 +7272,7 @@ impl Screen {
         self.change_mode(self.default_input_mode(), base_mode, client_id)
     }
 
-    fn client_in_copy_capable_mode(&self, client_id: ClientId) -> bool {
+    fn client_in_scroll_or_search(&self, client_id: ClientId) -> bool {
         matches!(
             self.mode_info.get(&client_id).map(|m| m.mode),
             Some(InputMode::Scroll | InputMode::Search)
@@ -7326,38 +7315,6 @@ impl Screen {
                     .output();
             }
         }
-    }
-
-    pub fn handle_toggle_copy_mode(&mut self, client_id: ClientId) -> Result<()> {
-        // Native vim-like copy/selection mode is temporarily disabled: clear any
-        // leftover session so a stray ToggleCopyMode cannot paint a selection.
-        active_tab!(self, client_id, |tab: &mut Tab| {
-            tab.exit_copy_mode_on_active_pane(client_id);
-        });
-        Ok(())
-    }
-
-    pub fn handle_copy_mode_cancel(&mut self, client_id: ClientId) -> Result<()> {
-        // Copy/selection mode disabled — just clear any leftover session.
-        active_tab!(self, client_id, |tab: &mut Tab| {
-            tab.exit_copy_mode_on_active_pane(client_id);
-        });
-        Ok(())
-    }
-
-    pub fn handle_copy_mode_yank(&mut self, client_id: ClientId) -> Result<()> {
-        active_tab!(self, client_id, |tab: &mut Tab| {
-            tab.exit_copy_mode_on_active_pane(client_id);
-        });
-        Ok(())
-    }
-
-    pub fn handle_copy_mode_key(&mut self, client_id: ClientId, _key: CopyModeKey) -> Result<()> {
-        // Copy/selection mode disabled — clear any leftover session.
-        active_tab!(self, client_id, |tab: &mut Tab| {
-            tab.exit_copy_mode_on_active_pane(client_id);
-        });
-        Ok(())
     }
 
     pub fn change_mode_for_all_clients(
@@ -11989,22 +11946,6 @@ pub(crate) fn screen_thread_main(
             ) => {
                 active_tab!(screen, client_id, |tab: &mut Tab| tab
                     .copy_selection(client_id), ?);
-                screen.render(None)?;
-            },
-            ScreenInstruction::ToggleCopyMode(client_id, _completion_tx) => {
-                screen.handle_toggle_copy_mode(client_id)?;
-                screen.render(None)?;
-            },
-            ScreenInstruction::CopyModeKey(key, client_id, _completion_tx) => {
-                screen.handle_copy_mode_key(client_id, key)?;
-                screen.render(None)?;
-            },
-            ScreenInstruction::CopyModeYank(client_id, _completion_tx) => {
-                screen.handle_copy_mode_yank(client_id)?;
-                screen.render(None)?;
-            },
-            ScreenInstruction::CopyModeCancel(client_id, _completion_tx) => {
-                screen.handle_copy_mode_cancel(client_id)?;
                 screen.render(None)?;
             },
             ScreenInstruction::Exit => {

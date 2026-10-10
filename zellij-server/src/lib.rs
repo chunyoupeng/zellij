@@ -13,7 +13,6 @@ pub mod tab;
 
 pub mod agent_detection;
 pub mod background_jobs;
-mod copy_mode;
 mod global_async_runtime;
 mod logging_pipe;
 mod mobile_web;

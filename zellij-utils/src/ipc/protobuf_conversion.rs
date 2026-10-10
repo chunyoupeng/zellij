@@ -1223,16 +1223,6 @@ impl From<crate::input::actions::Action>
             ConfirmAction,
             CopyAction,
             CopyLastCommandOutputAction,
-            CopyModeCancelAction,
-            CopyModeHalfPageScrollAction,
-            CopyModeLineEndAction,
-            CopyModeLineStartAction,
-            CopyModeMoveAction,
-            CopyModePageScrollAction,
-            CopyModeWordBackAction,
-            CopyModeWordEndAction,
-            CopyModeWordStartAction,
-            CopyModeYankAction,
             CurrentTabInfoAction,
             DenyAction,
             DetachAction,
@@ -1349,7 +1339,6 @@ impl From<crate::input::actions::Action>
             TabNameInputAction,
             ToggleActiveSyncTabAction,
             ToggleActiveSyncTabByTabIdAction,
-            ToggleCopyModeAction,
             ToggleFloatingPanesAction,
             ToggleFloatingPanesByTabIdAction,
             ToggleFocusFullscreenAction,
@@ -2339,45 +2328,6 @@ impl From<crate::input::actions::Action>
                     direction: direction_to_proto_i32(direction),
                 })
             },
-            crate::input::actions::Action::ToggleCopyMode => {
-                ActionType::ToggleCopyMode(ToggleCopyModeAction {})
-            },
-            crate::input::actions::Action::CopyModeMove { direction } => {
-                ActionType::CopyModeMove(CopyModeMoveAction {
-                    direction: direction_to_proto_i32(direction),
-                })
-            },
-            crate::input::actions::Action::CopyModePageScroll { direction } => {
-                ActionType::CopyModePageScroll(CopyModePageScrollAction {
-                    direction: direction_to_proto_i32(direction),
-                })
-            },
-            crate::input::actions::Action::CopyModeHalfPageScroll { direction } => {
-                ActionType::CopyModeHalfPageScroll(CopyModeHalfPageScrollAction {
-                    direction: direction_to_proto_i32(direction),
-                })
-            },
-            crate::input::actions::Action::CopyModeLineStart => {
-                ActionType::CopyModeLineStart(CopyModeLineStartAction {})
-            },
-            crate::input::actions::Action::CopyModeLineEnd => {
-                ActionType::CopyModeLineEnd(CopyModeLineEndAction {})
-            },
-            crate::input::actions::Action::CopyModeWordStart => {
-                ActionType::CopyModeWordStart(CopyModeWordStartAction {})
-            },
-            crate::input::actions::Action::CopyModeWordEnd => {
-                ActionType::CopyModeWordEnd(CopyModeWordEndAction {})
-            },
-            crate::input::actions::Action::CopyModeWordBack => {
-                ActionType::CopyModeWordBack(CopyModeWordBackAction {})
-            },
-            crate::input::actions::Action::CopyModeYank => {
-                ActionType::CopyModeYank(CopyModeYankAction {})
-            },
-            crate::input::actions::Action::CopyModeCancel => {
-                ActionType::CopyModeCancel(CopyModeCancelAction {})
-            },
             crate::input::actions::Action::MoveTabToPosition { id, position } => {
                 ActionType::MoveTabToPosition(MoveTabToPositionAction { id, position })
             },
@@ -3041,31 +2991,6 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Action>
             ActionType::ToggleHostFullscreen(_) => {
                 Ok(crate::input::actions::Action::ToggleHostFullscreen)
             },
-            ActionType::ToggleCopyMode(_) => Ok(crate::input::actions::Action::ToggleCopyMode),
-            ActionType::CopyModeMove(a) => Ok(crate::input::actions::Action::CopyModeMove {
-                direction: proto_i32_to_direction(a.direction)?,
-            }),
-            ActionType::CopyModePageScroll(a) => {
-                Ok(crate::input::actions::Action::CopyModePageScroll {
-                    direction: proto_i32_to_direction(a.direction)?,
-                })
-            },
-            ActionType::CopyModeHalfPageScroll(a) => {
-                Ok(crate::input::actions::Action::CopyModeHalfPageScroll {
-                    direction: proto_i32_to_direction(a.direction)?,
-                })
-            },
-            ActionType::CopyModeLineStart(_) => {
-                Ok(crate::input::actions::Action::CopyModeLineStart)
-            },
-            ActionType::CopyModeLineEnd(_) => Ok(crate::input::actions::Action::CopyModeLineEnd),
-            ActionType::CopyModeWordStart(_) => {
-                Ok(crate::input::actions::Action::CopyModeWordStart)
-            },
-            ActionType::CopyModeWordEnd(_) => Ok(crate::input::actions::Action::CopyModeWordEnd),
-            ActionType::CopyModeWordBack(_) => Ok(crate::input::actions::Action::CopyModeWordBack),
-            ActionType::CopyModeYank(_) => Ok(crate::input::actions::Action::CopyModeYank),
-            ActionType::CopyModeCancel(_) => Ok(crate::input::actions::Action::CopyModeCancel),
             ActionType::RenameSession(rename_session_action) => {
                 Ok(crate::input::actions::Action::RenameSession {
                     name: rename_session_action.name,

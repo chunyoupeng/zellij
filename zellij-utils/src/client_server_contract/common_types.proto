@@ -328,17 +328,6 @@ message Action {
     OpenContextMenuAction open_context_menu = 161;
     MoveTabToPositionAction move_tab_to_position = 162;
     RunInBackgroundAction run_in_background = 163;
-    ToggleCopyModeAction toggle_copy_mode = 164;
-    CopyModeMoveAction copy_mode_move = 165;
-    CopyModePageScrollAction copy_mode_page_scroll = 166;
-    CopyModeHalfPageScrollAction copy_mode_half_page_scroll = 167;
-    CopyModeLineStartAction copy_mode_line_start = 168;
-    CopyModeLineEndAction copy_mode_line_end = 169;
-    CopyModeWordStartAction copy_mode_word_start = 170;
-    CopyModeWordEndAction copy_mode_word_end = 171;
-    CopyModeWordBackAction copy_mode_word_back = 172;
-    CopyModeYankAction copy_mode_yank = 173;
-    CopyModeCancelAction copy_mode_cancel = 174;
   }
 }
 
@@ -403,23 +392,6 @@ message SetDarkThemeAction {}
 message SetLightThemeAction {}
 message ToggleThemeAction {}
 message CopyAction {}
-message ToggleCopyModeAction {}
-message CopyModeMoveAction {
-  Direction direction = 1;
-}
-message CopyModePageScrollAction {
-  Direction direction = 1;
-}
-message CopyModeHalfPageScrollAction {
-  Direction direction = 1;
-}
-message CopyModeLineStartAction {}
-message CopyModeLineEndAction {}
-message CopyModeWordStartAction {}
-message CopyModeWordEndAction {}
-message CopyModeWordBackAction {}
-message CopyModeYankAction {}
-message CopyModeCancelAction {}
 message ConfirmAction {}
 message DenyAction {}
 message ToggleMouseModeAction {}
