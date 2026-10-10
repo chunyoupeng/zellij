@@ -36,13 +36,24 @@ pub struct AgentStatus {
 }
 
 impl AgentStatus {
+    pub fn symbol(&self) -> &'static str {
+        match self.activity {
+            AgentActivity::Working => "●",
+            AgentActivity::Blocked => "!",
+            AgentActivity::Idle => "○",
+            AgentActivity::Done => "✓",
+            AgentActivity::Error => "✗",
+        }
+    }
+
     pub fn badge_text(&self) -> String {
-        let (symbol, label) = match self.activity {
-            AgentActivity::Working => ("●", ""),
-            AgentActivity::Blocked => ("●", " needs input"),
-            AgentActivity::Idle => ("○", " idle"),
-            AgentActivity::Done => ("✓", " done"),
-            AgentActivity::Error => ("✗", " error"),
+        let symbol = self.symbol();
+        let label = match self.activity {
+            AgentActivity::Working => "",
+            AgentActivity::Blocked => " needs input",
+            AgentActivity::Idle => " idle",
+            AgentActivity::Done => " done",
+            AgentActivity::Error => " error",
         };
         if self.name.is_empty() {
             let state_desc = match self.activity {

@@ -41,6 +41,14 @@ fn foreground_color(characters: &str, color: Option<PaletteColor>) -> Vec<Termin
     })
 }
 
+fn plain_foreground_color(characters: &str, color: Option<PaletteColor>) -> Vec<TerminalCharacter> {
+    styled_characters(characters, |styles| {
+        if let Some(palette_color) = color {
+            styles.foreground = Some(AnsiCode::from(palette_color));
+        }
+    })
+}
+
 fn dimmed_foreground_color(
     characters: &str,
     color: Option<PaletteColor>,
@@ -75,6 +83,9 @@ pub struct StackListEntry {
     pub is_selected: bool,
     pub is_emphasized: bool,
     pub stack_is_focused: bool,
+    /// Some member of the stack runs an agent: every entry reserves the
+    /// status icon column so the labels line up.
+    pub has_agent_column: bool,
 }
 
 pub struct FrameParams {
@@ -521,7 +532,7 @@ impl PaneFrame {
 
     fn agent_badge_color(&self, activity: AgentActivity) -> Option<PaletteColor> {
         match activity {
-            AgentActivity::Working => Some(self.style.colors.exit_code_success.base),
+            AgentActivity::Working => Some(self.style.colors.text_unselected.emphasis_1),
             AgentActivity::Blocked => Some(self.style.colors.text_unselected.emphasis_0),
             AgentActivity::Idle => self.style.colors.frame_unselected.map(|frame| frame.base),
             AgentActivity::Done => Some(self.style.colors.exit_code_success.base),
@@ -530,31 +541,20 @@ impl PaneFrame {
     }
 
     /// A colored badge showing the state of the AI agent running in the pane,
-    /// eg. "● claude" (green when working, orange when waiting for input,
-    /// dimmed when idle).
+    /// eg. "● claude" (cyan when working, orange "!" when waiting for input,
+    /// green when done, dimmed when idle).
     fn agent_badge(&self, max_length: usize) -> Option<(Vec<TerminalCharacter>, usize)> {
         let status = self.agent_status.as_ref()?;
         let color = self.agent_badge_color(status.activity);
         let text = format!(" {} ", status.badge_text());
         let width = text.width();
         if width <= max_length {
-            Some((foreground_color(&text, color), width))
+            Some((plain_foreground_color(&text, color), width))
         } else {
             None
         }
     }
 
-    fn agent_badge_for_stack(&self, max_length: usize) -> Option<(Vec<TerminalCharacter>, usize)> {
-        let status = self.agent_status.as_ref()?;
-        let color = self.agent_badge_color(status.activity);
-        let text = format!("{} ", status.badge_text());
-        let width = text.width();
-        if width <= max_length {
-            Some((foreground_color(&text, color), width))
-        } else {
-            None
-        }
-    }
     fn render_title_left_side(&self, max_length: usize) -> Option<(Vec<TerminalCharacter>, usize)> {
         let (mut badge, badge_length) = self.agent_badge(max_length).unwrap_or((vec![], 0));
         let title = self.render_title_text(max_length.saturating_sub(badge_length));
@@ -868,11 +868,18 @@ impl PaneFrame {
         let inner_width = entry
             .width
             .min(usable_cols.saturating_sub(marker_width + corner_overhead));
-        let (badge_part, badge_length) = self
-            .agent_badge_for_stack(inner_width)
-            .map(|(chars, len)| (Some(chars), len))
-            .unwrap_or((None, 0));
-        let content_budget = inner_width.saturating_sub(badge_length);
+        let icon_width = if entry.has_agent_column { 2 } else { 0 };
+        let text_budget = inner_width.saturating_sub(icon_width);
+        // The agent name sits dimmed at the end of the entry; it is the first
+        // thing dropped when the label does not fit next to it.
+        let agent_name = self
+            .agent_status
+            .as_ref()
+            .map(|status| status.name.as_str())
+            .filter(|name| !name.is_empty())
+            .filter(|name| entry.label.width() + name.width() + 1 <= text_budget);
+        let name_length = agent_name.map(|name| name.width() + 1).unwrap_or(0);
+        let content_budget = text_budget.saturating_sub(name_length);
         let content = if entry.label.width() <= content_budget {
             entry.label.clone()
         } else {
@@ -919,13 +926,27 @@ impl PaneFrame {
         for _ in 0..corner_padding {
             line.push(EMPTY_TERMINAL_CHARACTER);
         }
-        if let Some(mut badge_characters) = badge_part {
-            line.append(&mut badge_characters);
+        if entry.has_agent_column {
+            match &self.agent_status {
+                Some(status) => {
+                    let color = self.agent_badge_color(status.activity);
+                    line.append(&mut plain_foreground_color(status.symbol(), color));
+                    line.push(EMPTY_TERMINAL_CHARACTER);
+                },
+                None => {
+                    line.push(EMPTY_TERMINAL_CHARACTER);
+                    line.push(EMPTY_TERMINAL_CHARACTER);
+                },
+            }
         }
         line.append(&mut style_entry_text(&content));
-        let content_padding = inner_width.saturating_sub(badge_length + content.width());
+        let name_width = agent_name.map(|name| name.width()).unwrap_or(0);
+        let content_padding = inner_width.saturating_sub(icon_width + content.width() + name_width);
         for _ in 0..content_padding {
             line.push(EMPTY_TERMINAL_CHARACTER);
+        }
+        if let Some(name) = agent_name {
+            line.append(&mut dimmed_foreground_color(name, unfocused_color));
         }
         for _ in 0..corner_padding {
             line.push(EMPTY_TERMINAL_CHARACTER);
@@ -1793,16 +1814,24 @@ mod tests {
             is_selected: true,
             stack_is_focused: true,
             is_emphasized: false,
+            has_agent_column: true,
         };
         let line = frame.render_stack_list_entry(&entry);
         let text = characters_to_string(&line);
         assert!(
-            text.contains("● pi") && text.contains("my pane"),
+            text.contains("● my pane") && text.contains(" pi │"),
             "stack list entry line was: {:?}",
             text
         );
+        assert!(
+            line.iter()
+                .find(|c| c.character == '●')
+                .map(|c| c.styles.bold != Some(AnsiCode::On))
+                .unwrap_or(false),
+            "the status icon is not bold"
+        );
 
-        // Test with different state (e.g. Done)
+        // The state is carried by the icon alone; the name stays at the end.
         let mut frame_done = pane_frame_with(false, false, 80);
         frame_done.title = "another pane".into();
         frame_done.set_agent_status(Some(AgentStatus {
@@ -1815,13 +1844,68 @@ mod tests {
             is_selected: false,
             stack_is_focused: false,
             is_emphasized: false,
+            has_agent_column: true,
         };
         let line_done = frame_done.render_stack_list_entry(&entry_done);
         let text_done = characters_to_string(&line_done);
         assert!(
-            text_done.contains("✓ codex done") && text_done.contains("another pane"),
+            text_done.contains("✓ another pane")
+                && text_done.contains(" codex │")
+                && !text_done.contains("done"),
             "stack list entry done line was: {:?}",
             text_done
+        );
+    }
+
+    #[test]
+    fn stack_list_entry_without_agent_keeps_the_icon_column() {
+        let entry = StackListEntry {
+            width: 30,
+            label: "shell".into(),
+            is_selected: false,
+            stack_is_focused: true,
+            is_emphasized: false,
+            has_agent_column: true,
+        };
+        let mut frame_agent = pane_frame_with(false, false, 80);
+        frame_agent.set_agent_status(Some(AgentStatus {
+            name: "pi".into(),
+            activity: AgentActivity::Idle,
+        }));
+        let agent_text = characters_to_string(&frame_agent.render_stack_list_entry(&entry));
+        let shell_text = characters_to_string(
+            &pane_frame_with(false, false, 80).render_stack_list_entry(&entry),
+        );
+        let label_column = |text: &str| text.find("shell").map(|index| text[..index].width());
+        assert_eq!(
+            label_column(&agent_text),
+            label_column(&shell_text),
+            "labels line up whether or not the pane runs an agent: {:?} / {:?}",
+            agent_text,
+            shell_text
+        );
+    }
+
+    #[test]
+    fn stack_list_entry_drops_agent_name_before_truncating_label() {
+        let mut frame = pane_frame_with(false, false, 80);
+        frame.set_agent_status(Some(AgentStatus {
+            name: "claude-code".into(),
+            activity: AgentActivity::Blocked,
+        }));
+        let entry = StackListEntry {
+            width: 14,
+            label: "a long label".into(),
+            is_selected: false,
+            stack_is_focused: true,
+            is_emphasized: false,
+            has_agent_column: true,
+        };
+        let text = characters_to_string(&frame.render_stack_list_entry(&entry));
+        assert!(
+            text.contains("! a long label") && !text.contains("claude-code"),
+            "stack list entry line was: {:?}",
+            text
         );
     }
 

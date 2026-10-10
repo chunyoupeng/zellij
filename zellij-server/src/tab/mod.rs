@@ -826,20 +826,16 @@ pub trait Pane {
     fn stack_list_entry_label(&self) -> String {
         self.current_title()
     }
+    /// Width of the label plus the agent name shown at the end of the stack list
+    /// entry (with a one column gap). The status icon column is added per stack.
     fn stack_list_entry_width(&self) -> usize {
         let label_width = self.stack_list_entry_label().width();
-        let badge_width = self
+        let name_width = self
             .effective_agent_status()
-            .map(|s| {
-                let bw = s.badge_text().width();
-                if label_width > 0 {
-                    bw + 1
-                } else {
-                    bw
-                }
-            })
+            .filter(|status| !status.name.is_empty())
+            .map(|status| status.name.width() + 1)
             .unwrap_or(0);
-        label_width + badge_width
+        label_width + name_width
     }
     fn custom_title(&self) -> Option<String>;
     fn has_explicit_title(&self) -> bool {
@@ -1829,7 +1825,7 @@ impl Tab {
                 .cols
                 .as_usize()
                 .saturating_sub(visible_content_offset.left + visible_content_offset.right);
-            let widest_member_title = list
+            let members: Vec<&dyn Pane> = list
                 .members
                 .iter()
                 .filter_map(|member| {
@@ -1839,9 +1835,16 @@ impl Tab {
                         self.suppressed_panes.get(member).map(|(_, p)| &**p)
                     }
                 })
+                .collect();
+            let stack_has_agent = members
+                .iter()
+                .any(|pane| pane.effective_agent_status().is_some());
+            let widest_member_title = members
+                .iter()
                 .map(|pane| pane.stack_list_entry_width())
                 .max()
-                .unwrap_or(0);
+                .unwrap_or(0)
+                + if stack_has_agent { 2 } else { 0 };
             let stack_is_focused = active_panes.values().any(|p_id| *p_id == list.visible);
             for (rank, member) in list.members.iter().enumerate() {
                 let mut header_geom = rect;
@@ -1883,6 +1886,7 @@ impl Tab {
                     Some(widest_member_title),
                     *member == list.visible,
                     stack_is_focused,
+                    stack_has_agent,
                 );
                 for (client_id, client_mode) in &client_modes {
                     pane_contents_and_ui.render_pane_frame(

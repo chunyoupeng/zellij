@@ -39,6 +39,7 @@ pub struct PaneContentsAndUi<'a> {
     stack_list_entry_width: Option<usize>,
     stack_list_entry_is_selected: bool,
     stack_list_entry_stack_is_focused: bool,
+    stack_list_entry_has_agent_column: bool,
     blank_title: bool,
     mouse_scroll_resize: bool,
     mouse_hover_tips: bool,
@@ -101,6 +102,7 @@ impl<'a> PaneContentsAndUi<'a> {
             stack_list_entry_width: None,
             stack_list_entry_is_selected: false,
             stack_list_entry_stack_is_focused: false,
+            stack_list_entry_has_agent_column: false,
             blank_title: false,
             mouse_scroll_resize,
             mouse_hover_tips,
@@ -127,10 +129,12 @@ impl<'a> PaneContentsAndUi<'a> {
         stack_list_entry_width: Option<usize>,
         stack_list_entry_is_selected: bool,
         stack_list_entry_stack_is_focused: bool,
+        stack_list_entry_has_agent_column: bool,
     ) {
         self.stack_list_entry_width = stack_list_entry_width;
         self.stack_list_entry_is_selected = stack_list_entry_is_selected;
         self.stack_list_entry_stack_is_focused = stack_list_entry_stack_is_focused;
+        self.stack_list_entry_has_agent_column = stack_list_entry_has_agent_column;
     }
     pub fn render_pane_contents_to_multiple_clients(
         &mut self,
@@ -360,6 +364,7 @@ impl<'a> PaneContentsAndUi<'a> {
             label: self.pane.stack_list_entry_label(),
             is_selected: self.stack_list_entry_is_selected,
             stack_is_focused: self.stack_list_entry_stack_is_focused,
+            has_agent_column: self.stack_list_entry_has_agent_column,
             is_emphasized: pane_is_in_group
                 || (self
                     .mouse_is_hovering_over_pane_for_clients
