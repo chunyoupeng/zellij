@@ -148,7 +148,7 @@ fn discard_result<T>(_arg: anyhow::Result<T>) {}
 impl<T> FatalError<T> for anyhow::Result<T> {
     fn non_fatal(self) {
         if self.is_err() {
-            discard_result(self.context("a non-fatal error occured").to_log());
+            discard_result(self.context("a non-fatal error occurred").to_log());
         }
     }
 
@@ -156,7 +156,7 @@ impl<T> FatalError<T> for anyhow::Result<T> {
         if let Ok(val) = self {
             val
         } else {
-            self.context("a fatal error occured")
+            self.context("a fatal error occurred")
                 .expect("Program terminates")
         }
     }
@@ -228,6 +228,7 @@ pub enum ScreenContext {
     HorizontalSplit,
     VerticalSplit,
     WriteCharacter,
+    KeyToPopup,
     ResizeIncreaseAll,
     ResizeIncreaseLeft,
     ResizeIncreaseDown,
@@ -274,6 +275,11 @@ pub enum ScreenContext {
     ScrollDownAt,
     ScrollToBottom,
     ScrollToTop,
+    ScrollToPreviousPrompt,
+    ScrollToNextPrompt,
+    SelectCommandAtScrollPosition,
+    CopyLastCommandOutput,
+    ClearCommandOutputFlash,
     PageScrollUp,
     PageScrollDown,
     HalfPageScrollUp,
@@ -309,18 +315,19 @@ pub enum ScreenContext {
     CloseTabWithId,
     RenameTabWithId,
     BreakPanesToTabWithId,
-    TerminalResize,
     RecomputeTabSize,
     TerminalPixelDimensions,
     TerminalBackgroundColor,
     TerminalForegroundColor,
     TerminalColorRegisters,
     SetKittyGraphicsSupport,
+    SetKittyZlibSupport,
     SetSixelSupport,
     ForwardHostQuery,
     NestedSessionMessageFromPane,
     NestedGuestPingTick,
     NestedSessionMessageFromHost,
+    GetNestedSessionKeybinds,
     GuestModalChoice,
     ForwardedReplyFromHost,
     ResumePaneAfterForward,
@@ -341,9 +348,6 @@ pub enum ScreenContext {
     ToggleTab,
     AddClient,
     RemoveClient,
-    SuppressRenderUntilMobile,
-    MobileSizeSettled,
-    ForceMobileUngate,
     UpdateSearch,
     SearchDown,
     SearchUp,
@@ -353,8 +357,13 @@ pub enum ScreenContext {
     AddRedPaneFrameColorOverride,
     ClearPaneFrameColorOverride,
     SetTabBellFlash,
+    HostTerminalFocusChanged,
+    SetClientHostTerminalEnv,
+    ForwardDesktopNotifications,
     PreviousSwapLayout,
     NextSwapLayout,
+    ApplyTiledSwapLayout,
+    ApplyFloatingSwapLayout,
     OverrideLayout,
     OverrideLayoutComplete,
     QueryTabNames,
@@ -412,7 +421,7 @@ pub enum ScreenContext {
     PageScrollUpInPaneId,
     PageScrollDownInPaneId,
     TogglePaneIdFullscreen,
-    SetTabFit,
+    SetMobileRenderPreferences,
     TogglePaneEmbedOrEjectForPaneId,
     CloseTabWithIndex,
     BreakPanesToNewTab,
@@ -424,15 +433,33 @@ pub enum ScreenContext {
     ChangeFloatingPanesCoordinates,
     TogglePaneBorderless,
     SetPaneBorderless,
+    SetPaneBorderStyle,
     AddHighlightPaneFrameColorOverride,
     GroupAndUngroupPanes,
     HighlightAndUnhighlightPanes,
     FloatMultiplePanes,
     EmbedMultiplePanes,
     TogglePaneInGroup,
+    TogglePaneIdInGroup,
+    StartRenamePaneWithPaneId,
+    StartRenameTabWithTabId,
+    OpenContextMenu,
+    OpenContextMenuFromPlugin,
+    OpenPluginPopup,
+    OpenPipePopup,
+    OpenPromptPopup,
+    AddPopup,
+    SetPopupSize,
+    CloseTopPopup,
+    ScrollPopup,
+    DismissInfoPopups,
+    UpdateContextMenuConfig,
+    UpdateMousebinds,
+    GetContextMenuItemActions,
     ToggleGroupMarking,
     SessionSharingStatusChange,
     SetMouseSelectionSupport,
+    SetPaneCollapsed,
     InterceptKeyPresses,
     ClearKeyPressesIntercepts,
     ReplacePaneWithExistingPane,
@@ -473,17 +500,14 @@ pub enum ScreenContext {
     ToggleFloatingPanesWithTabId,
     PreviousSwapLayoutWithTabId,
     NextSwapLayoutWithTabId,
+    ApplyTiledSwapLayoutWithTabId,
+    ApplyFloatingSwapLayoutWithTabId,
     MoveTabWithTabId,
-    PluginSubscribedToAnsiPaneContents,
+    MoveTabToPosition,
     UpdateBackgroundPluginSubscriptions,
     ClearHintTextCache,
     BroadcastModeUpdate,
-    EnterMobileMode,
-    ExitMobileMode,
-    ToggleMobileMode,
-    ReevaluateMobileMode,
     SetSoftKeyboard,
-    SetShadowFocus,
     FocusHostSession,
     FocusGuestSession,
     ToggleHostFullscreen,
@@ -501,6 +525,7 @@ pub enum PtyContext {
     NewTab,
     OverrideLayout,
     ClosePane,
+    ClosePaneThatWasNotCreated,
     CloseTab,
     ReRunCommandInPane,
     DropToShellInPane,
@@ -521,6 +546,7 @@ pub enum PtyContext {
     GetPaneCwd,
     UpdateAndReportCwds,
     NotifyCwdFromOsc7,
+    RunInBackground,
     Exit,
 }
 
@@ -532,17 +558,18 @@ pub enum PluginContext {
     Update,
     Render,
     Unload,
+    LoadPopup,
     Reload,
     ReloadPluginWithId,
     Resize,
     Exit,
     AddClient,
     RemoveClient,
+    UpdatePluginTabIndices,
+    UpdateClientVisiblePlugins,
     NewTab,
     OverrideLayout,
     ApplyCachedEvents,
-    HoldMobileRender,
-    ReleaseMobileRender,
     ApplyCachedWorkerMessages,
     PostMessageToPluginWorker,
     PostMessageToPlugin,
@@ -551,6 +578,11 @@ pub enum PluginContext {
     DumpLayout,
     LogLayoutToHd,
     CliPipe,
+    SetCliPipeExitCode,
+    PipePopupFailed,
+    PromptRequest,
+    PromptReplied,
+    PromptPopupFailed,
     Message,
     CachePluginEvents,
     MessageFromPlugin,
@@ -561,6 +593,9 @@ pub enum PluginContext {
     ListClientsMetadata,
     Reconfigure,
     FailedToWriteConfigToDisk,
+    ConfigWasWrittenToDisk,
+    ConfigChangesDropped,
+    ConfigFileChangedSinceRead,
     ListClientsToPlugin,
     ChangePluginHostDir,
     WebServerStarted,
@@ -568,6 +603,7 @@ pub enum PluginContext {
     PaneRenderReport,
     UserInput,
     LayoutListUpdate,
+    KeybindPresetListUpdate,
     RequestStateUpdateForPlugin,
     UpdateSessionSaveTime,
     GetLastSessionSaveTime,
@@ -627,6 +663,19 @@ pub enum ServerContext {
     ConfigWrittenToDisk,
     FailedToWriteConfigToDisk,
     RebindKeys,
+    ReplaceConfigBlocks,
+    ResetKeys,
+    ResetMousebinds,
+    ReadConfig,
+    RevertConfig,
+    UnsetConfigSetting,
+    SaveConfig,
+    OverwriteConfigFile,
+    ReloadConfigFile,
+    CopyKeybindPreset,
+    SaveKeybindsAsPreset,
+    WriteThemeFile,
+    DeleteThemeFile,
     StartWebServer,
     ShareCurrentSession,
     StopSharingCurrentSession,
@@ -634,9 +683,11 @@ pub enum ServerContext {
     FailedToStartWebServer,
     SendWebClientsForbidden,
     ClearMouseHelpText,
+    ClearCommandOutputFlash,
     ForwardQueryToHost,
     KeyPassthroughChanged,
     EmitNestedSessionFrameToClient,
+    PopupStateChanged,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -656,6 +707,7 @@ pub enum BackgroundJobContext {
     ReportSessionInfo,
     ReportLayoutInfo,
     RunCommand,
+    RunInBackground,
     WebRequest,
     ReportPluginList,
     ListWebSessions,
@@ -663,13 +715,14 @@ pub enum BackgroundJobContext {
     HighlightPanesWithMessage,
     QueryZellijWebServerStatus,
     ClearHelpText,
+    ClearCommandOutputFlash,
     FlashPaneBell,
     StopFlashPaneBell,
     FlashTabBell,
     StopFlashTabBell,
-    MobileGateTimeout,
     StartNestedGuestPing,
     StopNestedGuestPing,
+    TrimAllocator,
     Exit,
 }
 
@@ -747,7 +800,7 @@ open an issue on GitHub:
     #[error("Pane size remains unchanged")]
     PaneSizeUnchanged,
 
-    #[error("an error occured")]
+    #[error("an error occurred")]
     GenericError { source: anyhow::Error },
 
     #[error("Client {client_id} is too slow to handle incoming messages")]
@@ -854,7 +907,7 @@ mod not_wasm {
         error!(
             "{}",
             format!(
-                "Panic occured:
+                "Panic occurred:
              thread: {}
              location: {}
              message: {}",

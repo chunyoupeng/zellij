@@ -490,7 +490,7 @@ fn clicking_the_host_new_tab_button_while_descended_ascends_and_keeps_working() 
         "the host opened a second tab and undimmed after clicking the new tab button",
         |host_grid| {
             host_grid.lines().first().map_or(false, |tab_bar| {
-                tab_bar.contains("Tab #1") && tab_bar.contains("Tab #2")
+                tab_bar.contains(guest_session_name.as_str()) && tab_bar.contains("Tab #2")
             }) && normal_mode_bar_settled(host_grid)
         },
     );
@@ -507,7 +507,6 @@ fn clicking_the_host_new_tab_button_while_descended_ascends_and_keeps_working() 
         |host_grid| host_grid.contains("Pane #2") && normal_mode_bar_settled(host_grid),
     );
 
-    let _ = guest_session_name;
     nested.guest.quit();
     nested.host.quit();
 }
@@ -544,14 +543,14 @@ fn clicking_a_host_tab_while_descended_switches_tabs_and_ascends() {
         "the host now has two tabs with the second one focused on a host pane",
         |host_grid| {
             host_grid.lines().first().map_or(false, |tab_bar| {
-                tab_bar.contains("Tab #1") && tab_bar.contains("Tab #2")
+                tab_bar.contains(guest_session_name.as_str()) && tab_bar.contains("Tab #2")
             }) && normal_mode_bar_settled(host_grid)
         },
     );
     let first_tab_column = host_two_tabs
         .lines()
         .first()
-        .and_then(|tab_bar| display_column_of(tab_bar, "Tab #1"))
+        .and_then(|tab_bar| display_column_of(tab_bar, &guest_session_name))
         .expect("the first host tab ribbon is on the host tab bar")
         + 1;
     let second_tab_column = host_two_tabs
@@ -574,7 +573,7 @@ fn clicking_a_host_tab_while_descended_switches_tabs_and_ascends() {
         "clicking the second host tab switches away from the guest tab in normal mode",
         |host_grid| {
             host_grid.lines().first().map_or(false, |tab_bar| {
-                tab_bar.contains("Tab #1") && tab_bar.contains("Tab #2")
+                tab_bar.contains(guest_session_name.as_str()) && tab_bar.contains("Tab #2")
             }) && normal_mode_bar_settled(host_grid)
         },
     );
@@ -587,7 +586,95 @@ fn clicking_a_host_tab_while_descended_switches_tabs_and_ascends() {
         |host_grid| host_grid.contains("Pane #2") && normal_mode_bar_settled(host_grid),
     );
 
-    let _ = guest_session_name;
+    nested.guest.quit();
+    nested.host.quit();
+}
+
+fn stdin_contains(stdin: &[u8], needle: &[u8]) -> bool {
+    stdin.windows(needle.len()).any(|window| window == needle)
+}
+
+#[test]
+fn alt_clicking_the_guest_while_descended_reaches_the_guest_and_keeps_keys_flowing() {
+    let mut nested = NestedHarness::start_with_host_and_guest_config(
+        TERMINAL_SIZE,
+        "mouse_mode true",
+        "mouse_mode true\nadvanced_mouse_actions false",
+    );
+
+    boot_and_descend_on_first_load(&nested);
+    nested.guest.wait_for_app_load();
+    nested.wait_until_host_composites_settled_guest(
+        "the host composited the descended guest before the alt click",
+        single_blank_pane_guest_settled,
+        host_descended_bar_settled,
+    );
+
+    nested.host.send_stdin(&sgr_mouse_report(30, 8, 8));
+    nested.host_pane.wait_for_stdin(
+        "the alt-modified mouse report to be written down into the guest pane",
+        |stdin| stdin_contains(stdin, b"\x1b[<8;30;"),
+    );
+
+    nested.host.send_stdin(&keys::alt('n'));
+    let guest_new_pane = nested.guest.expect_pty_spawn();
+    guest_new_pane.output(PROMPT);
+    let guest_after_new_pane = nested.guest.wait_until(
+        "the key after the alt click still reached the guest",
+        two_pane_guest_settled,
+    );
+    assert_snapshot!(
+        "guest_reacts_to_key_after_alt_click",
+        normalized(&guest_after_new_pane)
+    );
+
+    nested.guest.quit();
+    nested.host.quit();
+}
+
+#[test]
+fn alt_wheel_over_the_descended_guest_reaches_the_guest_instead_of_jumping_host_prompts() {
+    let mut nested = NestedHarness::start_with_host_and_guest_config(
+        TERMINAL_SIZE,
+        "mouse_mode true\nadvanced_mouse_actions true",
+        "mouse_mode true\nadvanced_mouse_actions false",
+    );
+
+    boot_and_descend_on_first_load(&nested);
+    nested.guest.wait_for_app_load();
+    nested.wait_until_host_composites_settled_guest(
+        "the host composited the descended guest before the alt wheel",
+        single_blank_pane_guest_settled,
+        host_descended_bar_settled,
+    );
+
+    nested.host.send_stdin(&sgr_mouse_report(30, 8, 72));
+    nested.host_pane.wait_for_stdin(
+        "the alt-modified wheel report to be written down into the guest pane",
+        |stdin| stdin_contains(stdin, b"\x1b[<72;30;"),
+    );
+
+    nested.guest.quit();
+    nested.host.quit();
+}
+
+#[test]
+fn alt_wheel_over_an_undescended_guest_still_reaches_the_guest() {
+    let mut nested = NestedHarness::start_with_host_and_guest_config(
+        TERMINAL_SIZE,
+        "mouse_mode true\nadvanced_mouse_actions true",
+        "mouse_mode true\nadvanced_mouse_actions false",
+    );
+
+    boot_and_descend_on_first_load(&nested);
+    ascend_via_focus_host_binding(&nested);
+
+    nested.host.send_stdin(&sgr_mouse_report(30, 8, 72));
+    nested.host_pane.wait_for_stdin(
+        "the alt-modified wheel report to reach a guest the host has ascended out of",
+        |stdin| stdin_contains(stdin, b"\x1b[<72;30;"),
+    );
+
     nested.guest.quit();
     nested.host.quit();
 }
@@ -834,7 +921,7 @@ fn split_second_guest_pane(nested: &NestedHarness) {
 
 #[test]
 fn descended_client_sees_dimmed_host_chrome_while_second_client_does_not() {
-    let mut nested = NestedHarness::start(TERMINAL_SIZE);
+    let nested = NestedHarness::start(TERMINAL_SIZE);
     let guest_session_name = nested.guest.session_name().to_string();
 
     boot_and_descend_on_first_load(&nested);
@@ -945,8 +1032,8 @@ fn host_chrome_restores_exactly_after_ascend() {
         "host chrome rows restore exactly after ascend"
     );
 
-    nested.guest.quit();
-    nested.host.quit();
+    nested.guest.kill_session();
+    nested.host.kill_session();
 }
 
 #[test]
@@ -997,7 +1084,7 @@ fn guest_edge_focus_move_bubbles_out_to_the_adjacent_host_pane() {
 
 #[test]
 fn host_focus_move_onto_guest_pane_enters_at_the_correct_edge() {
-    let mut nested = NestedHarness::start(TERMINAL_SIZE);
+    let nested = NestedHarness::start(TERMINAL_SIZE);
 
     build_descended_state_with_host_sibling(&nested);
 
@@ -1044,7 +1131,7 @@ fn host_focus_move_onto_guest_pane_enters_at_the_correct_edge() {
 
 #[test]
 fn no_bubble_when_the_focus_move_stays_inside_the_guest() {
-    let mut nested = NestedHarness::start(TERMINAL_SIZE);
+    let nested = NestedHarness::start(TERMINAL_SIZE);
 
     build_descended_state_with_host_sibling(&nested);
     split_second_guest_pane(&nested);
@@ -1159,7 +1246,7 @@ fn move_focus_or_tab_bubbles_only_when_the_guest_has_a_single_tab() {
 
 #[test]
 fn move_focus_or_tab_wraps_tabs_without_bubbling_when_the_guest_has_multiple_tabs() {
-    let mut nested = NestedHarness::start(TERMINAL_SIZE);
+    let nested = NestedHarness::start(TERMINAL_SIZE);
 
     build_descended_state_with_host_sibling(&nested);
 

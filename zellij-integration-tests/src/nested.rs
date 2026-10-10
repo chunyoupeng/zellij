@@ -198,15 +198,13 @@ struct GuestBridge {
 
 fn bridge_guest_into_pane_for_host(
     host_pane: &FakePtyHandle,
-    host_session_name: &str,
     frozen: Arc<AtomicBool>,
 ) -> GuestBridge {
-    bridge_guest_into_pane_for_host_with_config(host_pane, host_session_name, frozen, "")
+    bridge_guest_into_pane_for_host_with_config(host_pane, frozen, "")
 }
 
 fn bridge_guest_into_pane_for_host_with_config(
     host_pane: &FakePtyHandle,
-    host_session_name: &str,
     frozen: Arc<AtomicBool>,
     guest_config_kdl: &str,
 ) -> GuestBridge {
@@ -221,7 +219,6 @@ fn bridge_guest_into_pane_for_host_with_config(
         cols: guest_cols as usize,
         rows: guest_rows as usize,
     })
-    .as_nested_guest(host_session_name)
     .with_config(guest_config_kdl)
     .with_stdout_tap(guest_stdout_tx)
     .skip_concurrency_slot()
@@ -274,12 +271,10 @@ impl NestedHarness {
             .start();
         host.wait_for_app_load();
         let host_pane = host.expect_pty_spawn();
-        let host_session_name = host.session_name().to_string();
 
         let frozen = Arc::new(AtomicBool::new(false));
         let bridge = bridge_guest_into_pane_for_host_with_config(
             &host_pane,
-            &host_session_name,
             frozen.clone(),
             guest_config_kdl,
         );
@@ -456,6 +451,7 @@ pub struct NestedDepthThreeHarness {
     pub middle_pane: FakePtyHandle,
     pub inner_pane: FakePtyHandle,
     outer_to_middle: FrameLog,
+    middle_to_outer: FrameLog,
     middle_to_inner: FrameLog,
     inner_to_middle: FrameLog,
     _frozen: Arc<AtomicBool>,
@@ -469,20 +465,17 @@ impl NestedDepthThreeHarness {
         let outer = TestRunner::new(outer_size).start();
         outer.wait_for_app_load();
         let middle_pane = outer.expect_pty_spawn();
-        let outer_session_name = outer.session_name().to_string();
 
         let frozen = Arc::new(AtomicBool::new(false));
-        let outer_to_middle_bridge =
-            bridge_guest_into_pane_for_host(&middle_pane, &outer_session_name, frozen.clone());
+        let outer_to_middle_bridge = bridge_guest_into_pane_for_host(&middle_pane, frozen.clone());
         let middle = outer_to_middle_bridge.guest;
         let outer_to_middle = outer_to_middle_bridge.host_to_guest;
+        let middle_to_outer = outer_to_middle_bridge.guest_to_host;
 
         middle.wait_for_app_load();
         let inner_pane = middle.expect_pty_spawn();
-        let middle_session_name = middle.session_name().to_string();
 
-        let middle_to_inner_bridge =
-            bridge_guest_into_pane_for_host(&inner_pane, &middle_session_name, frozen.clone());
+        let middle_to_inner_bridge = bridge_guest_into_pane_for_host(&inner_pane, frozen.clone());
         let inner = middle_to_inner_bridge.guest;
         let middle_to_inner = middle_to_inner_bridge.host_to_guest;
         let inner_to_middle = middle_to_inner_bridge.guest_to_host;
@@ -497,6 +490,7 @@ impl NestedDepthThreeHarness {
             middle_pane,
             inner_pane,
             outer_to_middle,
+            middle_to_outer,
             middle_to_inner,
             inner_to_middle,
             _frozen: frozen,
@@ -506,6 +500,10 @@ impl NestedDepthThreeHarness {
 
     pub fn outer_to_middle_frames(&self) -> &FrameLog {
         &self.outer_to_middle
+    }
+
+    pub fn middle_to_outer_frames(&self) -> &FrameLog {
+        &self.middle_to_outer
     }
 
     pub fn middle_to_inner_frames(&self) -> &FrameLog {
@@ -580,6 +578,10 @@ impl NestedDepthThreeHarness {
 
     pub fn mark_outer_to_middle(&self) -> usize {
         self.outer_to_middle.mark()
+    }
+
+    pub fn mark_middle_to_outer(&self) -> usize {
+        self.middle_to_outer.mark()
     }
 
     pub fn mark_middle_to_inner(&self) -> usize {

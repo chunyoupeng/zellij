@@ -5,7 +5,6 @@ use super::pane_resizer_test_mock::{
     PaneSpec, Run,
 };
 use crate::panes::PaneId;
-use std::collections::BTreeMap;
 use zellij_utils::input::layout::SplitDirection;
 use zellij_utils::pane_size::{Constraint, PaneGeom};
 
@@ -908,4 +907,33 @@ fn stacked_pane_with_override() {
     let f = fixture("stacked_pane_with_override");
     let run = f.run();
     println!("{} = {}", f.name, canonical(&run));
+}
+
+#[test]
+fn row_of_only_fixed_panes_that_fill_the_space_still_lays_out() {
+    let specs = vec![
+        spec(1, 0, 0, dim_pct(100.0, 20), dim_fixed(3)),
+        spec(2, 0, 3, dim_pct(100.0, 20), dim_fixed(7)),
+    ];
+    let run = run_layout(&specs, SplitDirection::Vertical, 10);
+    assert!(
+        !matches!(run.outcome, Outcome::OtherErr(_)),
+        "{:?}",
+        run.outcome
+    );
+}
+
+#[test]
+fn flexible_pane_with_no_space_left_is_an_error_not_a_panic() {
+    let specs = vec![
+        spec(1, 0, 0, dim_pct(100.0, 20), dim_fixed(1)),
+        spec(2, 0, 1, dim_pct(100.0, 20), dim_pct(100.0, 5)),
+        spec(3, 0, 6, dim_pct(100.0, 20), dim_fixed(2)),
+    ];
+    let run = run_layout(&specs, SplitDirection::Vertical, 3);
+    assert_eq!(
+        run.outcome,
+        Outcome::OtherErr("Ran out of room for spans".to_owned())
+    );
+    assert_eq!(pane(&run, 2).geom.rows.as_usize(), 5);
 }

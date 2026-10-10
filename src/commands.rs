@@ -37,7 +37,7 @@ use zellij_utils::{
     data::ConnectToSession,
     envs,
     input::{
-        actions::Action,
+        actions::{initial_panes_from_cli, Action},
         config::{Config, ConfigError},
         options::Options,
     },
@@ -229,7 +229,7 @@ pub(crate) fn start_web_server(
 }
 
 fn create_new_client() -> ClientInfo {
-    ClientInfo::New(generate_unique_session_name_or_exit(), None, None)
+    ClientInfo::New(generate_unique_session_name_or_exit(), None, None, None)
 }
 
 #[cfg(feature = "web_server_capability")]
@@ -334,6 +334,7 @@ pub(crate) fn list_auth_tokens() -> Result<Vec<String>, String> {
 }
 
 /// Default timeout for web server status check (in seconds)
+#[cfg(feature = "web_server_capability")]
 pub const DEFAULT_WEB_SERVER_STATUS_TIMEOUT_SECS: u64 = 30;
 
 #[cfg(feature = "web_server_capability")]
@@ -507,6 +508,48 @@ pub(crate) fn subscribe_to_session(
     );
 }
 
+pub(crate) fn prompt_in_session(
+    prompt_cli: zellij_utils::cli::PromptCli,
+    requested_session_name: Option<String>,
+    config: Option<Config>,
+) -> ! {
+    let session_name = match requested_session_name.or_else(|| envs::get_session_name().ok()) {
+        Some(session_name) => session_name,
+        None => {
+            eprintln!("zellij prompt must be run inside a Zellij session");
+            process::exit(zellij_utils::prompt::EXIT_ERROR);
+        },
+    };
+    let existing_sessions: Vec<String> = get_sessions()
+        .unwrap_or_default()
+        .iter()
+        .map(|s| s.0.clone())
+        .collect();
+    if !existing_sessions.contains(&session_name) {
+        eprintln!("Session '{}' not found", session_name);
+        process::exit(zellij_utils::prompt::EXIT_ERROR);
+    }
+    let plugin_url = match &config {
+        Some(config)
+            if config
+                .plugins
+                .aliases
+                .contains_key(zellij_utils::prompt::PROMPT_PLUGIN_ALIAS) =>
+        {
+            zellij_utils::prompt::PROMPT_PLUGIN_ALIAS.to_owned()
+        },
+        _ => zellij_utils::prompt::PROMPT_PLUGIN_URL.to_owned(),
+    };
+    let os_input = get_os_input(zellij_client::os_input_output::get_cli_client_os_input);
+    let exit_status = zellij_client::cli_client::start_prompt_client(
+        Box::new(os_input),
+        &session_name,
+        prompt_cli,
+        plugin_url,
+    );
+    process::exit(exit_status);
+}
+
 fn attach_with_cli_client(
     cli_action: zellij_utils::cli::CliAction,
     session_name: &str,
@@ -558,7 +601,7 @@ fn attach_with_session_name(
     match &session_name {
         Some(session) if create => match session_exists(session) {
             Ok(true) => ClientInfo::Attach(session_name.unwrap(), config_options),
-            Ok(false) => ClientInfo::New(session_name.unwrap(), None, None),
+            Ok(false) => ClientInfo::New(session_name.unwrap(), None, None, None),
             Err(kind) => {
                 eprintln!("{}", session_listing_error_message(kind));
                 process::exit(1);
@@ -664,6 +707,9 @@ pub(crate) fn start_client(opts: CliArgs) {
                     forget: false,
                     ca_cert: None,
                     insecure: false,
+                    initial_command: vec![],
+                    close_on_exit: false,
+                    start_suspended: false,
                 }));
             } else {
                 opts.command = None;
@@ -686,6 +732,7 @@ pub(crate) fn start_client(opts: CliArgs) {
             assert_session_ne(&session_name);
         };
 
+        #[cfg_attr(not(feature = "web_server_capability"), allow(unused_variables))]
         if let Some(Command::Sessions(Sessions::Attach {
             session_name,
             create,
@@ -698,6 +745,9 @@ pub(crate) fn start_client(opts: CliArgs) {
             forget,
             ca_cert,
             insecure,
+            initial_command,
+            close_on_exit,
+            start_suspended,
         })) = opts.command.clone()
         {
             if let Some(remote_session_url) = session_name.as_ref().and_then(|s| {
@@ -714,6 +764,11 @@ pub(crate) fn start_client(opts: CliArgs) {
 
                 if options.is_some() || create || create_background || force_run_commands {
                     eprintln!("Cannot attach to remote session with options.");
+                    std::process::exit(2);
+                }
+
+                if !initial_command.is_empty() {
+                    eprintln!("Cannot run an initial command on a remote session.");
                     std::process::exit(2);
                 }
 
@@ -751,16 +806,16 @@ pub(crate) fn start_client(opts: CliArgs) {
                         .as_ref()
                         .and_then(|s| session_exists(&s).ok())
                         .unwrap_or(false);
-                    let resurrection_layout =
-                        session_name
-                            .as_ref()
-                            .and_then(|s| match resurrection_layout(&s) {
-                                Ok(layout) => layout,
-                                Err(e) => {
-                                    eprintln!("{}", e);
-                                    process::exit(2);
-                                },
-                            });
+                    let resurrection_layout = session_name
+                        .as_ref()
+                        .filter(|_| !session_exists)
+                        .and_then(|s| match resurrection_layout(&s) {
+                            Ok(layout) => layout,
+                            Err(e) => {
+                                eprintln!("{}", e);
+                                process::exit(2);
+                            },
+                        });
                     if (create || should_create_detached)
                         && !session_exists
                         && resurrection_layout.is_none()
@@ -801,6 +856,18 @@ pub(crate) fn start_client(opts: CliArgs) {
                     client.set_cwd(new_session_cwd);
                 }
 
+                let current_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+                if let Some(initial_panes) = initial_panes_from_cli(
+                    initial_command,
+                    None,
+                    Some(current_dir.clone()),
+                    current_dir,
+                    close_on_exit,
+                    start_suspended,
+                ) {
+                    client.set_initial_panes(initial_panes);
+                }
+
                 let tab_position_to_focus = reconnect_to_session
                     .as_ref()
                     .and_then(|r| r.tab_position.clone());
@@ -827,7 +894,7 @@ pub(crate) fn start_client(opts: CliArgs) {
                     opts,
                     config,
                     config_options,
-                    ClientInfo::New(session_name, layout_info, new_session_cwd),
+                    ClientInfo::New(session_name, layout_info, new_session_cwd, None),
                     None,
                     None,
                     is_a_reconnect,
@@ -874,7 +941,12 @@ pub(crate) fn start_client(opts: CliArgs) {
                                 opts,
                                 config,
                                 config_options.clone(),
-                                ClientInfo::New(session_name.clone(), layout_info, new_session_cwd),
+                                ClientInfo::New(
+                                    session_name.clone(),
+                                    layout_info,
+                                    new_session_cwd,
+                                    None,
+                                ),
                                 None,
                                 None,
                                 is_a_reconnect,
@@ -897,7 +969,7 @@ pub(crate) fn start_client(opts: CliArgs) {
                     opts,
                     config,
                     config_options,
-                    ClientInfo::New(session_name, layout_info, new_session_cwd),
+                    ClientInfo::New(session_name, layout_info, new_session_cwd, None),
                     None,
                     None,
                     is_a_reconnect,

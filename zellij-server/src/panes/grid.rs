@@ -30,6 +30,7 @@ use zellij_utils::{
     consts::{DEFAULT_SCROLL_BUFFER_SIZE, SCROLL_BUFFER_SIZE},
     data::{Palette, PaletteColor, Styling},
     input::mouse::{MouseEvent, MouseEventType},
+    input::options::DEFAULT_WORD_SEPARATORS,
     nested_session::{self, NestedSessionMessage},
     pane_size::SizeInPixels,
     position::Position,
@@ -43,83 +44,214 @@ const BASE64_DECODER: GeneralPurpose = GeneralPurpose::new(
     GeneralPurposeConfig::new().with_decode_padding_mode(DecodePaddingMode::Indifferent),
 );
 
-/// Rewrites OSC 99 metadata for multiplexer forwarding:
-///
-/// 1. Namespaces the `i=` value with a pane ID prefix and flags so responses
-///    can be routed back to the originating pane.
-///    Format: `i=p<pane_id>[r][q].<original_id>`
-///    - `r` flag: app requested `a=report` — activation response should be
-///      written back to the pane's PTY
-///    - `q` flag: this is a capability query (`p=?`) — response must be
-///      written back to the pane's PTY
-///    - Neither: activation response used only for focus routing, not forwarded
-///
-/// 2. Ensures `a=report` is always present so the host terminal sends the
-///    activation response back to Zellij (needed for pane focus routing).
-///
-/// If no `i=` key is present, one is added with an empty original ID.
-pub(crate) fn namespace_notification_id(metadata: &str, pane_id: u32) -> String {
+const MAX_TRACKED_NOTIFICATION_IDS: usize = 256;
+const MAX_NOTIFICATION_ASSEMBLY_BYTES: usize = 4096;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PendingNotification {
+    Osc99 {
+        payload: String,
+        terminator: String,
+        wants_report: bool,
+        display: Option<(String, String)>,
+    },
+    Osc9 {
+        body: String,
+    },
+    Osc777 {
+        title: String,
+        body: String,
+    },
+}
+
+impl PendingNotification {
+    pub fn title_and_body(&self) -> (String, String) {
+        match self {
+            PendingNotification::Osc99 { display, .. } => display.clone().unwrap_or_default(),
+            PendingNotification::Osc9 { body } => (String::new(), body.clone()),
+            PendingNotification::Osc777 { title, body } => (title.clone(), body.clone()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Osc99PayloadType {
+    Title,
+    Body,
+    Close,
+    Query,
+    Alive,
+    Other,
+}
+
+impl Osc99PayloadType {
+    pub(crate) fn from_metadata_value(value: &str) -> Self {
+        match value {
+            "title" => Osc99PayloadType::Title,
+            "body" => Osc99PayloadType::Body,
+            "close" => Osc99PayloadType::Close,
+            "?" => Osc99PayloadType::Query,
+            "alive" => Osc99PayloadType::Alive,
+            _ => Osc99PayloadType::Other,
+        }
+    }
+    pub(crate) fn is_control_request(&self) -> bool {
+        matches!(
+            self,
+            Osc99PayloadType::Close | Osc99PayloadType::Query | Osc99PayloadType::Alive
+        )
+    }
+}
+
+pub(crate) fn split_osc99_payload(payload: &str) -> (&str, &str) {
+    match payload.find(';') {
+        Some(idx) => (
+            payload.get(..idx).unwrap_or_default(),
+            payload.get(idx + 1..).unwrap_or_default(),
+        ),
+        None => (payload, ""),
+    }
+}
+
+pub(crate) fn parse_osc99_metadata(metadata: &str) -> BTreeMap<&str, &str> {
+    metadata
+        .split(':')
+        .filter_map(|kv| kv.split_once('='))
+        .collect()
+}
+
+fn action_wants_report(action_value: &str) -> bool {
+    action_value.split(',').any(|value| value == "report")
+}
+
+#[derive(Debug, Clone, Default)]
+struct NotificationAssembly {
+    title: String,
+    body: String,
+}
+
+fn append_bounded(destination: &mut String, payload: &str) {
+    let remaining = MAX_NOTIFICATION_ASSEMBLY_BYTES.saturating_sub(destination.len());
+    if remaining == 0 {
+        return;
+    }
+    if payload.len() <= remaining {
+        destination.push_str(payload);
+        return;
+    }
+    let mut truncate_at = remaining;
+    while truncate_at > 0 && !payload.is_char_boundary(truncate_at) {
+        truncate_at -= 1;
+    }
+    destination.push_str(&payload[..truncate_at]);
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct NotificationTracker {
+    wants_report: HashMap<String, bool>,
+    assemblies: HashMap<String, NotificationAssembly>,
+    known_ids: VecDeque<String>,
+}
+
+impl NotificationTracker {
+    fn remember(&mut self, id: &str) {
+        if self.known_ids.iter().any(|known| known == id) {
+            return;
+        }
+        self.known_ids.push_back(id.to_owned());
+        while self.known_ids.len() > MAX_TRACKED_NOTIFICATION_IDS {
+            if let Some(evicted) = self.known_ids.pop_front() {
+                self.wants_report.remove(&evicted);
+                self.assemblies.remove(&evicted);
+            }
+        }
+    }
+    fn wants_report(&mut self, id: &str, action: Option<&str>) -> bool {
+        match action {
+            Some(action_value) => {
+                let wants_report = action_wants_report(action_value);
+                if !id.is_empty() {
+                    self.remember(id);
+                    self.wants_report.insert(id.to_owned(), wants_report);
+                }
+                wants_report
+            },
+            None => self.wants_report.get(id).copied().unwrap_or(false),
+        }
+    }
+    fn assemble(
+        &mut self,
+        id: &str,
+        payload_type: Osc99PayloadType,
+        is_done: bool,
+        payload: String,
+    ) -> Option<(String, String)> {
+        if payload_type == Osc99PayloadType::Close {
+            self.assemblies.remove(id);
+            return None;
+        }
+        if payload_type.is_control_request() {
+            return None;
+        }
+        if !payload.is_empty() {
+            self.remember(id);
+            let assembly = self.assemblies.entry(id.to_owned()).or_default();
+            match payload_type {
+                Osc99PayloadType::Title => append_bounded(&mut assembly.title, &payload),
+                Osc99PayloadType::Body => append_bounded(&mut assembly.body, &payload),
+                _ => {},
+            }
+        }
+        if !is_done {
+            return None;
+        }
+        let assembly = self.assemblies.remove(id)?;
+        if assembly.title.is_empty() && assembly.body.is_empty() {
+            None
+        } else {
+            Some((assembly.title, assembly.body))
+        }
+    }
+}
+
+pub(crate) fn namespace_notification_id(
+    metadata: &str,
+    pane_id: u32,
+    wants_report: bool,
+) -> String {
+    let flags = if wants_report { "r" } else { "" };
     let mut found_id = false;
     let mut found_action = false;
-    let mut app_wants_report = false;
-    let mut is_query = false;
-    let result = metadata
-        .split(':')
-        .map(|kv| {
-            if kv.starts_with("i=") {
-                found_id = true;
-                // Defer i= rewriting until we know the flags
-                kv.to_string()
-            } else if let Some(action_value) = kv.strip_prefix("a=") {
-                found_action = true;
-                app_wants_report = action_value.split(',').any(|v| v == "report");
-                if app_wants_report {
-                    kv.to_string()
-                } else {
-                    format!("a={},report", action_value)
-                }
-            } else if kv == "p=?" {
-                is_query = true;
-                kv.to_string()
+    let mut payload_type = Osc99PayloadType::Title;
+    let mut parts: Vec<String> = Vec::new();
+    for kv in metadata.split(':') {
+        if kv.is_empty() {
+            continue;
+        }
+        if let Some(id_value) = kv.strip_prefix("i=") {
+            found_id = true;
+            parts.push(format!("i=p{}{}.{}", pane_id, flags, id_value));
+        } else if let Some(action_value) = kv.strip_prefix("a=") {
+            found_action = true;
+            if action_wants_report(action_value) {
+                parts.push(kv.to_owned());
             } else {
-                kv.to_string()
+                parts.push(format!("a={},report", action_value));
             }
-        })
-        .collect::<Vec<_>>()
-        .join(":");
-
-    // Build flags suffix
-    let mut flags = String::new();
-    if app_wants_report {
-        flags.push('r');
-    }
-    if is_query {
-        flags.push('q');
-    }
-
-    // Rewrite i= with pane ID and flags
-    let result = result
-        .split(':')
-        .map(|kv| {
-            if let Some(id_value) = kv.strip_prefix("i=") {
-                format!("i=p{}{}.{}", pane_id, flags, id_value)
-            } else {
-                kv.to_string()
+        } else {
+            if let Some(payload_value) = kv.strip_prefix("p=") {
+                payload_type = Osc99PayloadType::from_metadata_value(payload_value);
             }
-        })
-        .collect::<Vec<_>>()
-        .join(":");
-
-    let result = if !found_id {
-        format!("i=p{}{}.:{}", pane_id, flags, result)
-    } else {
-        result
-    };
-    if !found_action {
-        format!("{}:a=report", result)
-    } else {
-        result
+            parts.push(kv.to_owned());
+        }
     }
+    if !found_id {
+        parts.insert(0, format!("i=p{}{}.", pane_id, flags));
+    }
+    if !found_action && !payload_type.is_control_request() {
+        parts.push("a=focus,report".to_owned());
+    }
+    parts.join(":")
 }
 
 use vte::{Params, Perform};
@@ -631,6 +763,40 @@ fn highlight_match<'t>(captures: &regex::Captures<'t>) -> Option<regex::Match<'t
     captures.get(1).or_else(|| captures.get(0))
 }
 
+fn highlight_matches<'r, 't>(
+    regex: &'r regex::Regex,
+    text: &'t str,
+) -> impl Iterator<Item = regex::Match<'t>> + 'r
+where
+    't: 'r,
+{
+    let mut pos = 0;
+    std::iter::from_fn(move || {
+        while pos <= text.len() {
+            let captures = regex.captures_at(text, pos)?;
+            let mat = highlight_match(&captures);
+            let end = match (mat, captures.get(0)) {
+                (Some(m), _) => m.end(),
+                (None, Some(whole)) => whole.end(),
+                (None, None) => return None,
+            };
+            pos = if end > pos {
+                end
+            } else {
+                text[pos..]
+                    .chars()
+                    .next()
+                    .map(|c| pos + c.len_utf8())
+                    .unwrap_or(text.len() + 1)
+            };
+            if mat.is_some() {
+                return mat;
+            }
+        }
+        None
+    })
+}
+
 /// Check whether a (row, col) position falls within a display span.
 /// The span is inclusive at start and exclusive at end.
 fn position_in_span(
@@ -735,9 +901,8 @@ pub struct Grid {
     pub search_results: SearchResult,
     pub pending_clipboard_update: Option<String>,
     pub pending_osc7_cwd: Option<std::path::PathBuf>,
-    /// Pending desktop notifications: (payload, terminator)
-    /// Payload is the semicolon-joined params after "99", terminator is "\x07" or "\x1b\\"
-    pub pending_desktop_notifications: Vec<(String, String)>,
+    pub pending_desktop_notifications: Vec<PendingNotification>,
+    notification_tracker: NotificationTracker,
     /// Whitelisted host-terminal queries intercepted from the app running
     /// in this pane (CSI 14t / 16t pixel-dim queries, OSC 10;? / 11;? /
     /// 4;N;? color queries). Each entry is the raw byte sequence that
@@ -748,6 +913,7 @@ pub struct Grid {
     pub program_status: Option<ProgramStatus>,
     ui_component_bytes: Option<Vec<u8>>,
     nested_frame_bytes: Option<Vec<u8>>,
+    xtgettcap_bytes: Option<Vec<u8>>,
     style: Style,
     debug: bool,
     arrow_fonts: bool,
@@ -771,6 +937,11 @@ pub struct Grid {
     // key: plugin_id (u32), inner vec: (pattern, compiled) pairs
     pub hover_position: Option<Position>, // pane-relative cursor cell; None when outside pane
     pub cached_hover_tooltip: Option<String>,
+    osc133_markers_seen: bool,
+    osc133_command_selection: bool,
+    command_output_flash: Option<Selection>,
+    word_separators: String,
+    pub osc7_payload: Option<String>,
 }
 
 impl Grid {
@@ -818,6 +989,30 @@ fn rgb_to_hex_string((r, g, b): (u8, u8, u8)) -> String {
 fn osc_color_reply_body((r, g, b): (u8, u8, u8)) -> String {
     let expand = |c: u8| (c as u16) * 0x0101;
     format!("rgb:{:04x}/{:04x}/{:04x}", expand(r), expand(g), expand(b))
+}
+
+fn decode_hex_ascii(hex: &[u8]) -> Option<String> {
+    if hex.is_empty() || hex.len() % 2 != 0 {
+        return None;
+    }
+    let mut out = String::with_capacity(hex.len() / 2);
+    for pair in hex.chunks(2) {
+        let high = (pair[0] as char).to_digit(16)?;
+        let low = (pair[1] as char).to_digit(16)?;
+        let byte = (high * 16 + low) as u8;
+        if !byte.is_ascii_graphic() {
+            return None;
+        }
+        out.push(byte as char);
+    }
+    Some(out)
+}
+
+fn encode_hex_ascii(value: &str) -> String {
+    value
+        .bytes()
+        .map(|byte| format!("{:02X}", byte))
+        .collect::<String>()
 }
 
 /// A compiled highlight entry for one plugin/pattern combination.
@@ -1095,11 +1290,13 @@ impl Grid {
             pending_clipboard_update: None,
             pending_osc7_cwd: None,
             pending_desktop_notifications: Vec::new(),
+            notification_tracker: NotificationTracker::default(),
             pending_forwarded_queries: Vec::new(),
             pending_nested_session_messages: Vec::new(),
             program_status: None,
             ui_component_bytes: None,
             nested_frame_bytes: None,
+            xtgettcap_bytes: None,
             style,
             debug,
             arrow_fonts,
@@ -1115,7 +1312,23 @@ impl Grid {
             plugin_highlights: HashMap::new(),
             hover_position: None,
             cached_hover_tooltip: None,
+            osc133_markers_seen: false,
+            osc133_command_selection: true,
+            command_output_flash: None,
+            word_separators: DEFAULT_WORD_SEPARATORS.to_owned(),
+            osc7_payload: None,
         }
+    }
+    pub fn set_selection_options(&mut self, osc133_command_selection: bool, word_separators: &str) {
+        self.osc133_command_selection = osc133_command_selection;
+        if self.word_separators != word_separators {
+            self.word_separators = word_separators.to_owned();
+        }
+    }
+    /// Returns the last OSC 7 working directory URI reported by the child process,
+    /// or `None` if no OSC 7 has been received (or was rejected for invalid content).
+    pub fn osc7_payload(&self) -> Option<&str> {
+        self.osc7_payload.as_deref()
     }
     pub fn render_full_viewport(&mut self) {
         self.output_buffer.update_all_lines();
@@ -1207,18 +1420,21 @@ impl Grid {
         self.active_charset = index;
     }
     fn cursor_canonical_line_index(&self) -> usize {
-        let mut cursor_canonical_line_index = 0;
+        self.canonical_line_index_of_row(self.cursor.y)
+    }
+    fn canonical_line_index_of_row(&self, y: usize) -> usize {
+        let mut canonical_line_index = 0;
         let mut canonical_lines_traversed = 0;
         for (i, line) in self.viewport.iter().enumerate() {
             if line.is_canonical {
-                cursor_canonical_line_index = canonical_lines_traversed;
+                canonical_line_index = canonical_lines_traversed;
                 canonical_lines_traversed += 1;
             }
-            if i == self.cursor.y {
+            if i == y {
                 break;
             }
         }
-        cursor_canonical_line_index
+        canonical_line_index
     }
     // TODO: merge these two functions
     fn cursor_index_in_canonical_line(&self) -> usize {
@@ -1269,6 +1485,16 @@ impl Grid {
             }
         }
         y_coordinates
+    }
+    fn last_row_of_line_starting_at(&self, first_y: usize) -> usize {
+        let mut last_y = first_y;
+        for (y, row) in self.viewport.iter().enumerate().skip(first_y + 1) {
+            if row.is_canonical {
+                break;
+            }
+            last_y = y;
+        }
+        last_y
     }
     fn kitty_canonical_line_starts(&self) -> Vec<usize> {
         let mut starts = Vec::new();
@@ -1391,6 +1617,9 @@ impl Grid {
                 .saturating_sub(transferred_rows_height);
 
             self.selection.move_down(1);
+            if let Some(command_output_flash) = self.command_output_flash.as_mut() {
+                command_output_flash.move_down(1);
+            }
             // Move all search-selections down one line as well
             found_something = self
                 .search_results
@@ -1417,7 +1646,7 @@ impl Grid {
                     Some(mut last_line_above) => {
                         self.kitty_grid
                             .merge_rows_into_line_start(self.lines_above.len(), 1);
-                        last_line_above.append(&mut line_to_push_up.columns);
+                        last_line_above.append(&mut line_to_push_up);
                         last_line_above
                     },
                     None => {
@@ -1452,6 +1681,9 @@ impl Grid {
             self.kitty_reanchor_all_from_pixels();
 
             self.selection.move_up(1);
+            if let Some(command_output_flash) = self.command_output_flash.as_mut() {
+                command_output_flash.move_up(1);
+            }
             // Move all search-selections up one line as well
             found_something =
                 self.search_results
@@ -1464,24 +1696,12 @@ impl Grid {
         found_something
     }
     pub fn force_change_size(&mut self, new_rows: usize, new_columns: usize) {
-        // this is an ugly hack - it's here because sometimes we need to change_size to the
-        // existing size (eg. when resizing an alternative_grid to the current height/width) and
-        // the change_size method is a no-op in that case. Should be fixed by making the
-        // change_size method atomic
-        let intermediate_rows = if new_rows == self.height {
-            new_rows + 1
-        } else {
-            new_rows
-        };
-        let intermediate_columns = if new_columns == self.width {
-            new_columns + 1
-        } else {
-            new_columns
-        };
-        self.change_size(intermediate_rows, intermediate_columns);
-        self.change_size(new_rows, new_columns);
+        self.resize_and_reflow(new_rows, new_columns, true);
     }
     pub fn change_size(&mut self, new_rows: usize, new_columns: usize) {
+        self.resize_and_reflow(new_rows, new_columns, false);
+    }
+    fn resize_and_reflow(&mut self, new_rows: usize, new_columns: usize, force_rewrap: bool) {
         // Do nothing if this pane hasn't been given a proper size yet
         if new_columns == 0 || new_rows == 0 {
             return;
@@ -1499,11 +1719,15 @@ impl Grid {
         self.sixel_grid.character_cell_size_possibly_changed();
         self.kitty_grid.character_cell_size_possibly_changed();
         self.kitty_reanchor_all_from_pixels();
-        let cursors = if new_columns != self.width {
+        let cursors = if force_rewrap || new_columns != self.width {
             self.horizontal_tabstops = create_horizontal_tabstops(new_columns);
             let mut cursor_canonical_line_index = self.cursor_canonical_line_index();
             let cursor_index_in_canonical_line = self.cursor_index_in_canonical_line();
             let saved_cursor_index_in_canonical_line = self.saved_cursor_index_in_canonical_line();
+            let mut saved_cursor_canonical_line_index = self
+                .saved_cursor_position
+                .as_ref()
+                .map(|saved_cursor| self.canonical_line_index_of_row(saved_cursor.y));
             let mut viewport_canonical_lines = vec![];
             for mut row in self.viewport.drain(..) {
                 if !row.is_canonical
@@ -1511,15 +1735,18 @@ impl Grid {
                     && !self.lines_above.is_empty()
                 {
                     let mut first_line_above = self.lines_above.pop_back().unwrap();
-                    first_line_above.append(&mut row.columns);
+                    first_line_above.append(&mut row);
                     viewport_canonical_lines.push(first_line_above);
                     cursor_canonical_line_index += 1;
+                    if let Some(index) = saved_cursor_canonical_line_index.as_mut() {
+                        *index += 1;
+                    }
                 } else if row.is_canonical {
                     viewport_canonical_lines.push(row);
                 } else {
                     match viewport_canonical_lines.last_mut() {
                         Some(last_line) => {
-                            last_line.append(&mut row.columns);
+                            last_line.append(&mut row);
                         },
                         None => {
                             // the state is corrupted somehow
@@ -1570,13 +1797,20 @@ impl Grid {
 
             self.viewport = VecDeque::from(new_viewport_rows);
 
-            let mut new_cursor_y = self.canonical_line_y_coordinates(cursor_canonical_line_index)
-                + (cursor_index_in_canonical_line / new_columns);
-            let mut saved_cursor_y_coordinates =
-                self.saved_cursor_position.as_ref().map(|saved_cursor| {
-                    self.canonical_line_y_coordinates(saved_cursor.y)
-                        + saved_cursor_index_in_canonical_line.as_ref().unwrap() / new_columns
-                });
+            let cursor_line_first_y =
+                self.canonical_line_y_coordinates(cursor_canonical_line_index);
+            let cursor_line_last_y = self.last_row_of_line_starting_at(cursor_line_first_y);
+            let mut new_cursor_y =
+                cursor_line_first_y + (cursor_index_in_canonical_line / new_columns);
+            let mut saved_cursor_y_coordinates = match (
+                saved_cursor_canonical_line_index,
+                saved_cursor_index_in_canonical_line,
+            ) {
+                (Some(line_index), Some(index_in_line)) => Some(
+                    self.canonical_line_y_coordinates(line_index) + index_in_line / new_columns,
+                ),
+                _ => None,
+            };
 
             // A cursor at EOL has two equivalent positions - end of this line or beginning of
             // next. If not already at the beginning of line, bias to EOL so add character logic
@@ -1585,6 +1819,12 @@ impl Grid {
             if self.cursor.x != 0 && new_cursor_x == 0 {
                 new_cursor_y = new_cursor_y.saturating_sub(1);
                 new_cursor_x = new_columns
+            }
+            if new_cursor_y > cursor_line_last_y {
+                let offset_in_last_row = cursor_index_in_canonical_line
+                    .saturating_sub((cursor_line_last_y - cursor_line_first_y) * new_columns);
+                new_cursor_y = cursor_line_last_y;
+                new_cursor_x = offset_in_last_row.min(new_columns.saturating_sub(1));
             }
             let saved_cursor_x_coordinates = match (
                 saved_cursor_index_in_canonical_line.as_ref(),
@@ -1613,7 +1853,7 @@ impl Grid {
                 new_cursor_x,
                 saved_cursor_x_coordinates,
             ))
-        } else if new_rows != self.height {
+        } else if new_rows != self.height || self.viewport.len() != new_rows {
             let saved_cursor_y_coordinates = self
                 .saved_cursor_position
                 .as_ref()
@@ -1756,6 +1996,9 @@ impl Grid {
         let changed_rects = self
             .output_buffer
             .changed_rects_in_viewport(self.viewport.len());
+        if let Some(image_ids_to_reap) = self.sixel_grid.drain_image_ids_to_reap() {
+            self.sixel_grid.reap_images(image_ids_to_reap);
+        }
         let changed_sixel_image_chunks = self.sixel_grid.changed_sixel_chunks_in_viewport(
             changed_rects,
             self.lines_above.len(),
@@ -1763,9 +2006,6 @@ impl Grid {
             x_offset,
             y_offset,
         );
-        if let Some(image_ids_to_reap) = self.sixel_grid.drain_image_ids_to_reap() {
-            self.sixel_grid.reap_images(image_ids_to_reap);
-        }
         if self.kitty_settle_placements_below_the_viewport() {
             self.kitty_reanchor_all_from_pixels();
         }
@@ -1912,6 +2152,27 @@ impl Grid {
                     }
                 }
             }
+            if let Some(command_output_flash) = self.command_output_flash {
+                if command_output_flash.contains_row(character_chunk.y.saturating_sub(content_y)) {
+                    let foreground_color = match style.colors.text_unselected.emphasis_0 {
+                        PaletteColor::Rgb(rgb) => AnsiCode::RgbCode(rgb),
+                        PaletteColor::EightBit(col) => AnsiCode::ColorIndex(col),
+                    };
+                    character_chunk.add_selection_and_colors(
+                        HighlightSelection {
+                            selection: command_output_flash,
+                            bg: None,
+                            fg: Some(foreground_color),
+                            bold: false,
+                            italic: false,
+                            underline: false,
+                            layer: HighlightLayer::ActionFeedback,
+                        },
+                        content_x,
+                        content_y,
+                    );
+                }
+            }
             // Apply pre-computed plugin highlight selections to this chunk.
             for hs in &plugin_highlight_selections {
                 if hs
@@ -1952,7 +2213,7 @@ impl Grid {
         self.reset_terminal_state();
         self.mark_for_rerender();
     }
-    /// Dumps all lines above terminal vieport and the viewport itself to a string
+    /// Dumps all lines above terminal viewport and the viewport itself to a string
     pub fn dump_screen(&self, full: bool) -> String {
         let viewport: String = dump_screen!(self.viewport);
         if !full {
@@ -2339,7 +2600,7 @@ impl Grid {
     }
     pub fn clear_cursor_line(&mut self) {
         if let Some(viewport_line) = self.viewport.get_mut(self.cursor.y) {
-            viewport_line.truncate(0);
+            viewport_line.replace_columns(VecDeque::new());
             self.output_buffer.update_line(self.cursor.y);
         }
     }
@@ -2631,6 +2892,8 @@ impl Grid {
         self.set_scroll_region_to_viewport_size();
         self.pane_default_fg = None;
         self.pane_default_bg = None;
+        self.osc133_markers_seen = false;
+        self.osc7_payload = None;
         if let Some(images_to_reap) = self.sixel_grid.clear() {
             self.sixel_grid.reap_images(images_to_reap);
         }
@@ -2735,10 +2998,7 @@ impl Grid {
         )> = None;
         for (plugin_id, pattern_map) in &self.plugin_highlights {
             for (pattern, compiled) in pattern_map {
-                for captures in compiled.regex.captures_iter(&logical_text) {
-                    let Some(mat) = highlight_match(&captures) else {
-                        continue;
-                    };
+                for mat in highlight_matches(&compiled.regex, &logical_text) {
                     if let Some((_sel, start_row, start_col, end_row, end_col)) =
                         match_to_selection(&mat, &boundaries, &self.viewport)
                     {
@@ -2836,10 +3096,7 @@ impl Grid {
                 if !compiled.on_hover || compiled.tooltip_text.is_none() {
                     continue;
                 }
-                for captures in compiled.regex.captures_iter(&logical_text) {
-                    let Some(mat) = highlight_match(&captures) else {
-                        continue;
-                    };
+                for mat in highlight_matches(&compiled.regex, &logical_text) {
                     if let Some((_sel, start_row, start_col, end_row, end_col)) =
                         match_to_selection(&mat, &boundaries, &self.viewport)
                     {
@@ -2895,10 +3152,7 @@ impl Grid {
                                 if !compiled.on_hover || !compiled.has_visual_effect() {
                                     continue;
                                 }
-                                for captures in compiled.regex.captures_iter(&logical_text) {
-                                    let Some(mat) = highlight_match(&captures) else {
-                                        continue;
-                                    };
+                                for mat in highlight_matches(&compiled.regex, &logical_text) {
                                     if let Some((sel, start_row, start_col, end_row, end_col)) =
                                         match_to_selection(&mat, &boundaries, &self.viewport)
                                     {
@@ -2932,10 +3186,7 @@ impl Grid {
                     if compiled.on_hover || !compiled.has_visual_effect() {
                         continue;
                     }
-                    for captures in compiled.regex.captures_iter(&logical_text) {
-                        let Some(mat) = highlight_match(&captures) else {
-                            continue;
-                        };
+                    for mat in highlight_matches(&compiled.regex, &logical_text) {
                         if let Some((sel, _, _, _, _)) =
                             match_to_selection(&mat, &boundaries, &self.viewport)
                         {
@@ -2994,18 +3245,17 @@ impl Grid {
             self.mark_for_rerender();
             return;
         } else if self.click.is_triple_click() {
-            let Some((start_position, end_position)) = self.canonical_line_around_position(&start)
+            let Some((start_position, end_position)) = self
+                .osc133_command_around_position(start)
+                .or_else(|| self.canonical_line_around_position(start))
             else {
                 // no-op
                 return;
             };
             self.selection
                 .set_start_and_end_positions(start_position, end_position);
-            for i in std::cmp::min(start_position.line.0, end_position.line.0)
-                ..=std::cmp::max(start_position.line.0, end_position.line.0)
-            {
-                self.output_buffer.update_line(i as usize);
-            }
+            let current_selection = self.selection;
+            self.update_selected_lines(&old_selection, &current_selection);
             self.mark_for_rerender();
             return;
         }
@@ -3067,12 +3317,20 @@ impl Grid {
         self.mark_for_rerender();
     }
     pub fn get_selected_text(&self) -> Option<String> {
-        if self.selection.is_empty() {
+        self.text_in_selection(&self.selection)
+    }
+    pub fn text_in_range(&self, start: Position, end: Position) -> Option<String> {
+        let mut range_selection = Selection::default();
+        range_selection.set_start_and_end_positions(start, end);
+        self.text_in_selection(&range_selection)
+    }
+    fn text_in_selection(&self, text_selection: &Selection) -> Option<String> {
+        if text_selection.is_empty() {
             return None;
         }
         let mut selection: Vec<String> = vec![];
 
-        let sorted_selection = self.selection.sorted();
+        let sorted_selection = text_selection.sorted();
         let (start, end) = (sorted_selection.start, sorted_selection.end);
 
         for l in sorted_selection.line_indices() {
@@ -3097,7 +3355,7 @@ impl Grid {
                 Row::from_columns(VecDeque::from(vec![EMPTY_TERMINAL_CHARACTER; self.width]));
 
             // get the row from lines_above, viewport, or lines below depending on index
-            let row = if l < 0 && self.lines_above.len() > l.abs() as usize {
+            let row = if l < 0 && self.lines_above.len() >= l.abs() as usize {
                 let offset_from_end = l.abs();
                 &self.lines_above[self
                     .lines_above
@@ -3156,8 +3414,8 @@ impl Grid {
     }
     pub fn word_around_position(&self, position: &Position) -> Option<(Position, Position)> {
         let position_row = self.viewport.get(position.line.0 as usize)?;
-        let (index_start, index_end) =
-            position_row.word_indices_around_character_index(position.column.0)?;
+        let (index_start, index_end) = position_row
+            .word_indices_around_character_index(position.column.0, &self.word_separators)?;
 
         let mut position_start = Position::new(position.line.0 as i32, index_start as u16);
         let mut position_end = Position::new(position.line.0 as i32, index_end as u16);
@@ -3168,7 +3426,8 @@ impl Grid {
                 .viewport
                 .get(position_start.line.0.saturating_sub(1) as usize)
             {
-                let new_start_index = position_row_above.word_start_index_of_last_character();
+                let new_start_index =
+                    position_row_above.word_start_index_of_last_character(&self.word_separators);
                 position_start = Position::new(
                     position_start.line.0.saturating_sub(1) as i32,
                     new_start_index as u16,
@@ -3185,7 +3444,8 @@ impl Grid {
                 if position_row_below.is_canonical {
                     break;
                 }
-                let new_end_index = position_row_below.word_end_index_of_first_character();
+                let new_end_index =
+                    position_row_below.word_end_index_of_first_character(&self.word_separators);
                 position_end = Position::new(position_end.line.0 as i32 + 1, new_end_index as u16);
                 column_count_in_row = position_row_below.columns.len();
             } else {
@@ -3236,6 +3496,271 @@ impl Grid {
             }
         }
         Some((position_start, position_end))
+    }
+
+    fn row_at(&self, line: isize) -> Option<&Row> {
+        if line < 0 {
+            let offset_from_end = line.unsigned_abs();
+            if self.lines_above.len() >= offset_from_end {
+                self.lines_above
+                    .get(self.lines_above.len() - offset_from_end)
+            } else {
+                None
+            }
+        } else if (line as usize) < self.viewport.len() {
+            self.viewport.get(line as usize)
+        } else {
+            self.lines_below.get((line as usize) - self.viewport.len())
+        }
+    }
+
+    fn osc133_command_around_position(&self, position: &Position) -> Option<(Position, Position)> {
+        if !self.osc133_command_selection || !self.osc133_markers_seen {
+            return None;
+        }
+        let first_line = -(self.lines_above.len() as isize);
+        let last_line = (self.viewport.len() + self.lines_below.len()) as isize - 1;
+        let clicked_line = position.line.0 as isize;
+        let clicked_column = position.column.0 as usize;
+        let marker_position = |line: isize, column: usize| {
+            Position::new(line as i32, column.min(u16::MAX as usize) as u16)
+        };
+
+        let mut latest_output = None;
+        let mut selection_start = None;
+        'backward: for line in (first_line..=clicked_line.min(last_line)).rev() {
+            let Some(row) = self.row_at(line) else {
+                continue;
+            };
+            for marker in row.osc133_markers.iter().rev() {
+                if line == clicked_line && marker.column > clicked_column {
+                    continue;
+                }
+                match marker.kind {
+                    Osc133MarkerKind::Output => {
+                        if latest_output.is_none() {
+                            latest_output = Some(marker_position(line, marker.column));
+                        }
+                    },
+                    Osc133MarkerKind::Input => {
+                        latest_output?;
+                        selection_start = Some(marker_position(line, marker.column));
+                        break 'backward;
+                    },
+                    Osc133MarkerKind::Prompt | Osc133MarkerKind::End(_) => {
+                        latest_output?;
+                        break 'backward;
+                    },
+                }
+            }
+        }
+        let selection_start = selection_start.or(latest_output)?;
+
+        let mut selection_end = None;
+        'forward: for line in clicked_line.max(first_line)..=last_line {
+            let Some(row) = self.row_at(line) else {
+                continue;
+            };
+            for marker in row.osc133_markers.iter() {
+                if line == clicked_line && marker.column <= clicked_column {
+                    continue;
+                }
+                selection_end = Some(marker_position(line, marker.column));
+                break 'forward;
+            }
+        }
+        let selection_end = selection_end?;
+
+        Some((selection_start, selection_end))
+    }
+
+    fn osc133_marker_position(line: isize, column: usize) -> Position {
+        Position::new(line as i32, column.min(u16::MAX as usize) as u16)
+    }
+
+    fn previous_prompt_line_delta(&self) -> Option<usize> {
+        if !self.osc133_markers_seen {
+            return None;
+        }
+        let first_line = -(self.lines_above.len() as isize);
+        let mut input_candidate: Option<usize> = None;
+        let mut display_delta = 0;
+        for line in (first_line..0).rev() {
+            let Some(row) = self.row_at(line) else {
+                continue;
+            };
+            display_delta += calculate_row_display_height(row.width(), self.width);
+            for marker in row.osc133_markers.iter().rev() {
+                match marker.kind {
+                    Osc133MarkerKind::Prompt => return Some(display_delta),
+                    Osc133MarkerKind::Input => {
+                        if input_candidate.is_none() {
+                            input_candidate = Some(display_delta);
+                        }
+                    },
+                    Osc133MarkerKind::Output | Osc133MarkerKind::End(_) => {
+                        if let Some(candidate) = input_candidate {
+                            return Some(candidate);
+                        }
+                    },
+                }
+            }
+        }
+        input_candidate
+    }
+
+    fn next_prompt_line_delta(&self) -> Option<usize> {
+        if !self.osc133_markers_seen {
+            return None;
+        }
+        let last_line = (self.viewport.len() + self.lines_below.len()) as isize - 1;
+        for line in 1..=last_line {
+            let Some(row) = self.row_at(line) else {
+                continue;
+            };
+            for marker in row.osc133_markers.iter() {
+                match marker.kind {
+                    Osc133MarkerKind::Prompt | Osc133MarkerKind::Input => {
+                        let reachable_delta = (line as usize).min(self.lines_below.len());
+                        return (reachable_delta > 0).then_some(reachable_delta);
+                    },
+                    Osc133MarkerKind::Output | Osc133MarkerKind::End(_) => {},
+                }
+            }
+        }
+        None
+    }
+
+    pub fn scroll_to_previous_prompt(&mut self) -> bool {
+        let delta = self.previous_prompt_line_delta();
+        match delta {
+            Some(delta) => {
+                self.move_viewport_up(delta);
+                true
+            },
+            None => false,
+        }
+    }
+
+    pub fn scroll_to_next_prompt(&mut self) -> bool {
+        let delta = self.next_prompt_line_delta();
+        match delta {
+            Some(delta) => {
+                self.move_viewport_down(delta);
+                true
+            },
+            None => false,
+        }
+    }
+
+    fn osc133_command_at_scroll_position(&self) -> Option<(Position, Position)> {
+        if let Some(command) = self.osc133_command_around_position(&Position::new(0, 0)) {
+            return Some(command);
+        }
+        for line in 0..self.viewport.len() as isize {
+            let Some(row) = self.row_at(line) else {
+                continue;
+            };
+            for marker in row.osc133_markers.iter() {
+                if marker.kind != Osc133MarkerKind::Output {
+                    continue;
+                }
+                let anchor = Self::osc133_marker_position(line, marker.column);
+                if let Some(command) = self.osc133_command_around_position(&anchor) {
+                    return Some(command);
+                }
+            }
+        }
+        None
+    }
+
+    pub fn select_command_at_scroll_position(&mut self) -> bool {
+        let Some((start_position, end_position)) = self.osc133_command_at_scroll_position() else {
+            return false;
+        };
+        let old_selection = self.selection;
+        self.selection
+            .set_start_and_end_positions(start_position, end_position);
+        self.selection.finalize();
+        let current_selection = self.selection;
+        self.update_selected_lines(&old_selection, &current_selection);
+        self.mark_for_rerender();
+        true
+    }
+
+    fn command_output_text(&self, start: Position, end: Position) -> Option<String> {
+        let output = self.text_in_range(start, end)?;
+        let output = output
+            .strip_prefix('\n')
+            .map(String::from)
+            .unwrap_or(output);
+        if output.trim().is_empty() {
+            return None;
+        }
+        Some(output)
+    }
+
+    pub fn last_completed_command_output(&self) -> Option<(String, Position, Position)> {
+        if !self.osc133_markers_seen {
+            return None;
+        }
+        let first_line = -(self.lines_above.len() as isize);
+        let last_line = (self.viewport.len() + self.lines_below.len()) as isize - 1;
+        let mut command_boundary: Option<Position> = None;
+        for line in (first_line..=last_line).rev() {
+            let Some(row) = self.row_at(line) else {
+                continue;
+            };
+            for marker in row.osc133_markers.iter().rev() {
+                let marker_position = Self::osc133_marker_position(line, marker.column);
+                if marker.kind == Osc133MarkerKind::Output {
+                    if let Some(output_end) = command_boundary {
+                        if let Some(output) = self.command_output_text(marker_position, output_end)
+                        {
+                            return Some((output, marker_position, output_end));
+                        }
+                    }
+                }
+                command_boundary = Some(marker_position);
+            }
+        }
+        None
+    }
+
+    pub fn set_command_output_flash(&mut self, start: Position, end: Position) {
+        let mut flash = Selection::default();
+        flash.set_start_and_end_positions(start, end);
+        flash.finalize();
+        self.command_output_flash = Some(flash);
+        self.output_buffer.update_all_lines();
+        self.mark_for_rerender();
+    }
+
+    pub fn clear_command_output_flash(&mut self) -> bool {
+        if self.command_output_flash.take().is_none() {
+            return false;
+        }
+        self.output_buffer.update_all_lines();
+        self.mark_for_rerender();
+        true
+    }
+
+    #[cfg(test)]
+    pub fn osc133_end_exit_codes(&self) -> Vec<Option<i32>> {
+        let first_line = -(self.lines_above.len() as isize);
+        let last_line = (self.viewport.len() + self.lines_below.len()) as isize - 1;
+        let mut exit_codes = vec![];
+        for line in first_line..=last_line {
+            let Some(row) = self.row_at(line) else {
+                continue;
+            };
+            for marker in row.osc133_markers.iter() {
+                if let Osc133MarkerKind::End(exit_code) = marker.kind {
+                    exit_codes.push(exit_code);
+                }
+            }
+        }
+        exit_codes
     }
 
     fn update_selected_lines(&mut self, old_selection: &Selection, new_selection: &Selection) {
@@ -3600,6 +4125,10 @@ impl Grid {
             value = 68;
         } else if event.wheel_down {
             value = 69;
+        } else if event.wheel_left {
+            value = 70;
+        } else if event.wheel_right {
+            value = 71;
         }
         if event.event_type == MouseEventType::Motion {
             value += 32;
@@ -3627,6 +4156,10 @@ impl Grid {
             value = 64;
         } else if event.wheel_down {
             value = 65;
+        } else if event.wheel_left {
+            value = 66;
+        } else if event.wheel_right {
+            value = 67;
         }
         if event.event_type == MouseEventType::Motion {
             value += 32;
@@ -3648,7 +4181,13 @@ impl Grid {
             (MouseTracking::AnyEventTracking, _) => true,
             (_, MouseEventType::Press | MouseEventType::Release) => true,
             (MouseTracking::ButtonEventTracking, MouseEventType::Motion) => {
-                event.left | event.right | event.middle | event.wheel_up | event.wheel_down
+                event.left
+                    | event.right
+                    | event.middle
+                    | event.wheel_up
+                    | event.wheel_down
+                    | event.wheel_left
+                    | event.wheel_right
             },
             (_, _) => false,
         };
@@ -3890,6 +4429,49 @@ impl Grid {
             },
         }
     }
+    pub fn mouse_scroll_left_signal(&self, position: &Position) -> Option<String> {
+        match (&self.mouse_mode, &self.mouse_tracking) {
+            (_, MouseTracking::Off) => None,
+            (MouseMode::NoEncoding | MouseMode::Utf8, _) => {
+                let mut msg: Vec<u8> = vec![27, b'[', b'M', b'b'];
+                msg.append(&mut utf8_mouse_coordinates(
+                    position.column() + 1,
+                    position.line() + 1,
+                ));
+                Some(String::from_utf8_lossy(&msg).into())
+            },
+            (MouseMode::Sgr, _) => {
+                let mouse_event = format!(
+                    "\u{1b}[<66;{:?};{:?}M",
+                    position.column.0 + 1,
+                    position.line.0 + 1
+                );
+                Some(mouse_event)
+            },
+        }
+    }
+
+    pub fn mouse_scroll_right_signal(&self, position: &Position) -> Option<String> {
+        match (&self.mouse_mode, &self.mouse_tracking) {
+            (_, MouseTracking::Off) => None,
+            (MouseMode::NoEncoding | MouseMode::Utf8, _) => {
+                let mut msg: Vec<u8> = vec![27, b'[', b'M', b'c'];
+                msg.append(&mut utf8_mouse_coordinates(
+                    position.column() + 1,
+                    position.line() + 1,
+                ));
+                Some(String::from_utf8_lossy(&msg).into())
+            },
+            (MouseMode::Sgr, _) => {
+                let mouse_event = format!(
+                    "\u{1b}[<67;{:?};{:?}M",
+                    position.column.0 + 1,
+                    position.line.0 + 1
+                );
+                Some(mouse_event)
+            },
+        }
+    }
     pub fn is_alternate_mode_active(&self) -> bool {
         self.alternate_screen_state.is_some()
     }
@@ -3928,6 +4510,19 @@ impl Grid {
         };
         self.pending_messages_to_pty
             .push(format!("\u{1b}[?997;{}n", code).into_bytes());
+    }
+    fn answer_xtgettcap(&mut self, payload: &[u8]) {
+        for name_hex in payload.split(|byte| *byte == b';') {
+            let reply = match decode_hex_ascii(name_hex).as_deref() {
+                Some("Ms") => format!(
+                    "\u{1b}P1+r{}={}\u{1b}\\",
+                    encode_hex_ascii("Ms"),
+                    encode_hex_ascii("\u{1b}]52;%p1%s;%p2%s\u{7}"),
+                ),
+                _ => "\u{1b}P0+r\u{1b}\\".to_owned(),
+            };
+            self.pending_messages_to_pty.push(reply.into_bytes());
+        }
     }
     pub fn lock_renders(&mut self) {
         self.lock_renders = true;
@@ -4123,7 +4718,9 @@ impl Perform for Grid {
     }
 
     fn hook(&mut self, params: &Params, intermediates: &[u8], _ignore: bool, c: char) {
-        if c == 'q' {
+        if c == 'q' && intermediates.get(0) == Some(&b'+') {
+            self.xtgettcap_bytes = Some(vec![]);
+        } else if c == 'q' && intermediates.is_empty() {
             // we only process sixel images if we know the pixel size of each character cell,
             // otherwise we can't reliably display them
             if self.current_cursor_pixel_coordinates().is_some() {
@@ -4161,6 +4758,8 @@ impl Perform for Grid {
             ui_component_bytes.push(byte);
         } else if let Some(nested_frame_bytes) = self.nested_frame_bytes.as_mut() {
             nested_frame_bytes.push(byte);
+        } else if let Some(xtgettcap_bytes) = self.xtgettcap_bytes.as_mut() {
+            xtgettcap_bytes.push(byte);
         }
     }
 
@@ -4180,6 +4779,8 @@ impl Perform for Grid {
             {
                 self.pending_nested_session_messages.push(message);
             }
+        } else if let Some(xtgettcap_bytes) = self.xtgettcap_bytes.take() {
+            self.answer_xtgettcap(&xtgettcap_bytes);
         }
         self.mark_for_rerender();
     }
@@ -4210,6 +4811,18 @@ impl Perform for Grid {
                 if let Some(raw) = params.get(1) {
                     if let Some(path) = parse_osc7_path(raw) {
                         self.pending_osc7_cwd = Some(path);
+                    }
+                }
+                // Store the raw URI separately for forwarding to the parent terminal.
+                // Join params[1..] with ";" to preserve semicolons in the URI.
+                if params.len() >= 2 {
+                    let segments: Option<Vec<&str>> =
+                        params[1..].iter().map(|x| str::from_utf8(x).ok()).collect();
+                    if let Some(segments) = segments {
+                        let uri = segments.join(";");
+                        if !uri.is_empty() && !uri.chars().any(|c| c.is_control()) {
+                            self.osc7_payload = Some(uri);
+                        }
                     }
                 }
             },
@@ -4339,6 +4952,25 @@ impl Perform for Grid {
                 // get/set cursor color currently unimplemented
             },
 
+            b"133" => {
+                let marker = params.get(1).and_then(|subcommand| match *subcommand {
+                    b"A" | b"P" => Some(Osc133MarkerKind::Prompt),
+                    b"B" | b"I" => Some(Osc133MarkerKind::Input),
+                    b"C" => Some(Osc133MarkerKind::Output),
+                    b"D" => Some(Osc133MarkerKind::End(
+                        params
+                            .get(2)
+                            .and_then(|exit_code| std::str::from_utf8(exit_code).ok())
+                            .and_then(|exit_code| exit_code.trim().parse::<i32>().ok()),
+                    )),
+                    _ => None,
+                });
+                if let (Some(marker), Some(row)) = (marker, self.viewport.get_mut(self.cursor.y)) {
+                    row.add_osc133_marker(self.cursor.x, marker);
+                    self.osc133_markers_seen = true;
+                }
+            },
+
             // Set cursor style.
             b"50" => {
                 if params.len() >= 2
@@ -4363,10 +4995,17 @@ impl Perform for Grid {
                     return;
                 }
 
-                let _clipboard = params[1].get(0).unwrap_or(&b'c');
+                let clipboard = *params[1].get(0).unwrap_or(&b'c');
                 match params[2] {
                     b"?" => {
-                        // TBD: paste from own clipboard - currently unsupported
+                        self.pending_forwarded_queries.push(
+                            crate::host_query::HostQuery::ClipboardContent {
+                                selection: clipboard as char,
+                                terminator: crate::host_query::OscTerminator::from_bell_terminated(
+                                    bell_terminated,
+                                ),
+                            },
+                        );
                     },
                     base64 => {
                         if let Ok(bytes) = BASE64_DECODER.decode(base64) {
@@ -4436,9 +5075,78 @@ impl Perform for Grid {
                         .collect::<Vec<&str>>()
                         .join(";");
                     if !payload.is_empty() {
-                        // Store raw payload and terminator; namespacing applied at Tab level
+                        let (metadata, rest) = split_osc99_payload(&payload);
+                        let metadata = parse_osc99_metadata(metadata);
+                        let id = metadata.get("i").copied().unwrap_or_default();
+                        let payload_type = metadata
+                            .get("p")
+                            .map(|value| Osc99PayloadType::from_metadata_value(value))
+                            .unwrap_or(Osc99PayloadType::Title);
+                        let is_done = metadata.get("d").copied().unwrap_or("1") != "0";
+                        let decoded = if metadata.get("e").copied() == Some("1") {
+                            BASE64_DECODER
+                                .decode(rest.as_bytes())
+                                .map(|decoded| String::from_utf8_lossy(&decoded).into_owned())
+                                .unwrap_or_else(|_| rest.to_owned())
+                        } else {
+                            rest.to_owned()
+                        };
+                        let wants_report = self
+                            .notification_tracker
+                            .wants_report(id, metadata.get("a").copied());
+                        let display =
+                            self.notification_tracker
+                                .assemble(id, payload_type, is_done, decoded);
                         self.pending_desktop_notifications
-                            .push((payload, terminator.to_string()));
+                            .push(PendingNotification::Osc99 {
+                                payload,
+                                terminator: terminator.to_string(),
+                                wants_report,
+                                display,
+                            });
+                    }
+                }
+            },
+
+            b"9" => {
+                if params.len() > 1 {
+                    let is_conemu_subcommand = params.len() > 2
+                        && params
+                            .get(1)
+                            .and_then(|param| str::from_utf8(param).ok())
+                            .and_then(|param| param.parse::<u8>().ok())
+                            .map(|subcommand| (1..=12).contains(&subcommand))
+                            .unwrap_or(false);
+                    let body = params
+                        .get(1..)
+                        .unwrap_or_default()
+                        .iter()
+                        .flat_map(|x| str::from_utf8(x))
+                        .collect::<Vec<&str>>()
+                        .join(";");
+                    if !body.is_empty() && !is_conemu_subcommand {
+                        self.pending_desktop_notifications
+                            .push(PendingNotification::Osc9 { body });
+                    }
+                }
+            },
+
+            b"777" => {
+                let parts: Vec<&str> = params
+                    .get(1..)
+                    .unwrap_or_default()
+                    .iter()
+                    .flat_map(|x| str::from_utf8(x))
+                    .collect();
+                if parts.first().map(|s| *s) == Some("notify") {
+                    let title = parts.get(1).map(|s| s.to_string()).unwrap_or_default();
+                    let body = parts
+                        .get(2..)
+                        .map(|rest| rest.join(";"))
+                        .unwrap_or_default();
+                    if !title.is_empty() || !body.is_empty() {
+                        self.pending_desktop_notifications
+                            .push(PendingNotification::Osc777 { title, body });
                     }
                 }
             },
@@ -5276,7 +5984,23 @@ pub struct Row {
     pub columns: VecDeque<TerminalCharacter>,
     pub is_canonical: bool,
     width: Option<usize>,
+    only_single_width: bool,
     pub bg_color: Option<AnsiCode>,
+    osc133_markers: Vec<Osc133Marker>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Osc133MarkerKind {
+    Prompt,
+    Input,
+    Output,
+    End(Option<i32>),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Osc133Marker {
+    column: usize,
+    kind: Osc133MarkerKind,
 }
 
 impl Debug for Row {
@@ -5294,7 +6018,9 @@ impl Row {
             columns: VecDeque::new(),
             is_canonical: false,
             width: None,
+            only_single_width: false,
             bg_color: None,
+            osc133_markers: vec![],
         }
     }
     pub fn from_columns(columns: VecDeque<TerminalCharacter>) -> Self {
@@ -5302,7 +6028,9 @@ impl Row {
             columns,
             is_canonical: false,
             width: None,
+            only_single_width: false,
             bg_color: None,
+            osc133_markers: vec![],
         }
     }
     pub fn from_rows(mut rows: Vec<Row>) -> Self {
@@ -5311,7 +6039,7 @@ impl Row {
         } else {
             let mut first_row = rows.remove(0);
             for row in &mut rows {
-                first_row.append(&mut row.columns);
+                first_row.append(row);
             }
             first_row
         }
@@ -5334,10 +6062,14 @@ impl Row {
             self.width.unwrap()
         } else {
             let mut width = 0;
+            let mut only_single_width = true;
             for terminal_character in &self.columns {
-                width += terminal_character.width();
+                let character_width = terminal_character.width();
+                width += character_width;
+                only_single_width &= character_width == 1;
             }
             self.width = Some(width);
+            self.only_single_width = only_single_width;
             width
         }
     }
@@ -5401,6 +6133,7 @@ impl Row {
             Ordering::Equal => {
                 // this is unwrapped because this always happens after self.width_cached()
                 *self.width.as_mut().unwrap() += terminal_character.width();
+                self.only_single_width &= terminal_character.width() == 1;
                 // adding the character at the end of the current line
                 self.columns.push_back(terminal_character);
             },
@@ -5422,9 +6155,21 @@ impl Row {
             Ordering::Greater => {
                 // adding the character in the middle of the line
                 // we replace the character at its position
-                let (absolute_x_index, position_inside_character) =
-                    self.absolute_character_index_and_position_in_char(x);
+                let (absolute_x_index, position_inside_character) = if self.only_single_width {
+                    (x, 0)
+                } else {
+                    self.absolute_character_index_and_position_in_char(x)
+                };
                 let character_width = terminal_character.width();
+                let overwrite_start = x.saturating_sub(position_inside_character);
+                let overwrite_end =
+                    overwrite_start + character_width.max(self.columns[absolute_x_index].width());
+                let replacing_blank = self.columns[absolute_x_index].character == ' ';
+                self.osc133_markers.retain(|marker| {
+                    marker.column < overwrite_start
+                        || marker.column >= overwrite_end
+                        || (replacing_blank && marker.column == overwrite_start)
+                });
                 let replaced_character =
                     std::mem::replace(&mut self.columns[absolute_x_index], terminal_character);
                 match character_width.cmp(&replaced_character.width()) {
@@ -5441,6 +6186,7 @@ impl Row {
                                     .insert(position_to_remove, EMPTY_TERMINAL_CHARACTER);
                             }
                         }
+                        self.width = None;
                     },
                     Ordering::Less => {
                         // the replaced character is wider than the current character
@@ -5455,14 +6201,22 @@ impl Row {
                             self.columns
                                 .insert(absolute_x_index + 1, EMPTY_TERMINAL_CHARACTER);
                         }
+                        self.width = None;
                     },
-                    _ => {},
+                    Ordering::Equal => {
+                        self.only_single_width &= character_width == 1;
+                    },
                 }
-                self.width = None;
             },
         }
     }
     pub fn insert_character_at(&mut self, terminal_character: TerminalCharacter, x: usize) {
+        let character_width = terminal_character.width();
+        for marker in &mut self.osc133_markers {
+            if marker.column > x {
+                marker.column += character_width;
+            }
+        }
         let insert_position = self.absolute_character_index(x);
         match self.columns.len().cmp(&insert_position) {
             Ordering::Equal => self.columns.push_back(terminal_character),
@@ -5481,17 +6235,24 @@ impl Row {
         let absolute_x_index = self.absolute_character_index(x);
         if let Some(character) = self.columns.get_mut(absolute_x_index) {
             let terminal_character_width = terminal_character.width();
+            let overwrite_end = x + character.width().max(terminal_character_width);
+            self.osc133_markers
+                .retain(|marker| marker.column < x || marker.column >= overwrite_end);
+
+            let mut padding_character = EMPTY_TERMINAL_CHARACTER;
+            padding_character.styles = terminal_character.styles.clone();
             let character = std::mem::replace(character, terminal_character);
             let excess_width = character.width().saturating_sub(terminal_character_width);
             for _ in 0..excess_width {
                 self.columns
-                    .insert(absolute_x_index, EMPTY_TERMINAL_CHARACTER);
+                    .insert(absolute_x_index, padding_character.clone());
             }
         }
         self.width = None;
     }
     pub fn replace_columns(&mut self, columns: VecDeque<TerminalCharacter>) {
         self.columns = columns;
+        self.osc133_markers.clear();
         self.width = None;
     }
     pub fn push(&mut self, terminal_character: TerminalCharacter) {
@@ -5504,19 +6265,22 @@ impl Row {
         if truncate_position < self.columns.len() {
             self.columns.truncate(truncate_position);
         }
+        self.osc133_markers.retain(|marker| marker.column <= x);
         self.width = None;
     }
     pub fn position_accounting_for_widechars(&self, x: usize) -> usize {
-        let mut position = x;
+        self.character_index_and_start_column(x).0
+    }
+    fn character_index_and_start_column(&self, x: usize) -> (usize, usize) {
+        let mut column = 0;
         for (index, terminal_character) in self.columns.iter().enumerate() {
-            if index == position {
-                break;
+            let character_width = terminal_character.width();
+            if column + character_width > x {
+                return (index, column);
             }
-            if terminal_character.width() > 1 {
-                position = position.saturating_sub(terminal_character.width().saturating_sub(1));
-            }
+            column += character_width;
         }
-        position
+        (self.columns.len() + (x - column), x)
     }
     pub fn replace_and_pad_end(
         &mut self,
@@ -5524,18 +6288,33 @@ impl Row {
         to: usize,
         terminal_character: TerminalCharacter,
     ) {
-        let from_position_accounting_for_widechars = self.position_accounting_for_widechars(from);
-        let to_position_accounting_for_widechars = self.position_accounting_for_widechars(to);
-        let replacement_length = to_position_accounting_for_widechars
-            .saturating_sub(from_position_accounting_for_widechars);
+        self.osc133_markers.retain(|marker| marker.column <= from);
+        let (from_index, _) = self.character_index_and_start_column(from);
+        self.columns.truncate(from_index);
+        let retained_width = self.width();
+        if retained_width < from {
+            let mut gap_fill = EMPTY_TERMINAL_CHARACTER;
+            if let Some(bg_color) = self.bg_color {
+                gap_fill
+                    .styles
+                    .update(|styles| styles.background = Some(bg_color));
+            }
+            self.columns
+                .extend(std::iter::repeat(gap_fill).take(from - retained_width));
+        }
+        let replacement_length = to.saturating_sub(self.width());
         let mut replace_with = VecDeque::from(vec![terminal_character; replacement_length]);
-        self.columns
-            .truncate(from_position_accounting_for_widechars);
         self.columns.append(&mut replace_with);
         self.width = None;
     }
-    pub fn append(&mut self, to_append: &mut VecDeque<TerminalCharacter>) {
-        self.columns.append(to_append);
+    pub fn append(&mut self, to_append: &mut Row) {
+        let column_offset = self.width();
+        self.columns.append(&mut to_append.columns);
+        self.osc133_markers
+            .extend(to_append.osc133_markers.drain(..).map(|mut marker| {
+                marker.column += column_offset;
+                marker
+            }));
         self.width = None;
     }
     pub fn drain_until(&mut self, x: usize) -> VecDeque<TerminalCharacter> {
@@ -5557,14 +6336,17 @@ impl Row {
         drained_part
     }
     pub fn replace_and_pad_beginning(&mut self, to: usize, terminal_character: TerminalCharacter) {
-        let to_position_accounting_for_widechars = self.position_accounting_for_widechars(to);
+        let (to_position_accounting_for_widechars, character_start_column) =
+            self.character_index_and_start_column(to);
         let width_of_current_character = self
             .columns
             .get(to_position_accounting_for_widechars)
             .map(|character| character.width())
             .unwrap_or(1);
-        let mut replace_with =
-            VecDeque::from(vec![terminal_character; to + width_of_current_character]);
+        let replaced_end = character_start_column + width_of_current_character;
+        self.osc133_markers
+            .retain(|marker| marker.column >= replaced_end);
+        let mut replace_with = VecDeque::from(vec![terminal_character; replaced_end]);
         if to_position_accounting_for_widechars > self.columns.len() {
             self.columns.clear();
         } else if to_position_accounting_for_widechars >= self.columns.len() {
@@ -5586,12 +6368,27 @@ impl Row {
         let erase_position = self.absolute_character_index(x);
         if erase_position < self.columns.len() {
             self.width = None;
-            self.columns.remove(erase_position)
+            let deleted = self.columns.remove(erase_position);
+            if let Some(deleted) = &deleted {
+                let end = x + deleted.width();
+                self.osc133_markers.retain_mut(|marker| {
+                    if (x..end).contains(&marker.column) {
+                        false
+                    } else {
+                        if marker.column >= end {
+                            marker.column -= deleted.width();
+                        }
+                        true
+                    }
+                });
+            }
+            deleted
         } else {
             None
         }
     }
     pub fn split_to_rows_of_length(&mut self, max_row_length: usize) -> Vec<Row> {
+        let markers = std::mem::take(&mut self.osc133_markers);
         let mut parts: Vec<Row> = vec![];
         let mut current_part: VecDeque<TerminalCharacter> = VecDeque::new();
         let mut current_part_len = 0;
@@ -5615,16 +6412,36 @@ impl Row {
         if parts.is_empty() {
             parts.push(self.clone());
         }
+        for mut marker in markers {
+            let mut column_offset = 0;
+            for part_index in 0..parts.len() {
+                let part_width = parts[part_index].width();
+                if marker.column <= column_offset + part_width || part_index + 1 == parts.len() {
+                    marker.column = marker.column.saturating_sub(column_offset).min(part_width);
+                    parts[part_index].osc133_markers.push(marker);
+                    break;
+                }
+                column_offset += part_width;
+            }
+        }
         self.width = None;
         parts
+    }
+    fn add_osc133_marker(&mut self, column: usize, kind: Osc133MarkerKind) {
+        self.osc133_markers.push(Osc133Marker { column, kind });
+        self.osc133_markers.sort_by_key(|marker| marker.column);
     }
     pub fn last_index_in_line(&self) -> usize {
         self.columns.len()
     }
-    pub fn word_indices_around_character_index(&self, index: usize) -> Option<(usize, usize)> {
+    pub fn word_indices_around_character_index(
+        &self,
+        index: usize,
+        word_separators: &str,
+    ) -> Option<(usize, usize)> {
         let absolute_character_index = self.absolute_character_index(index);
         let character_at_index = self.columns.get(absolute_character_index)?;
-        if is_selection_boundary_character(character_at_index.character) {
+        if is_selection_boundary_character(character_at_index.character, word_separators) {
             return Some((index, index + 1));
         }
         let mut end_position = self
@@ -5633,7 +6450,7 @@ impl Row {
             .enumerate()
             .skip(absolute_character_index)
             .find_map(|(i, t_c)| {
-                if is_selection_boundary_character(t_c.character) {
+                if is_selection_boundary_character(t_c.character, word_separators) {
                     Some(i + self.excess_width_until(i))
                 } else {
                     None
@@ -5647,7 +6464,7 @@ impl Row {
             .take(absolute_character_index)
             .rev()
             .find_map(|(i, t_c)| {
-                if is_selection_boundary_character(t_c.character) {
+                if is_selection_boundary_character(t_c.character, word_separators) {
                     Some(i + 1 + self.excess_width_until(i))
                 } else {
                     None
@@ -5660,13 +6477,13 @@ impl Row {
         }
         Some((start_position, end_position))
     }
-    pub fn word_start_index_of_last_character(&self) -> usize {
+    pub fn word_start_index_of_last_character(&self, word_separators: &str) -> usize {
         self.columns
             .iter()
             .enumerate()
             .rev()
             .find_map(|(i, t_c)| {
-                if is_selection_boundary_character(t_c.character) {
+                if is_selection_boundary_character(t_c.character, word_separators) {
                     Some(self.absolute_character_index(i + 1))
                 } else {
                     None
@@ -5674,12 +6491,12 @@ impl Row {
             })
             .unwrap_or(0)
     }
-    pub fn word_end_index_of_first_character(&self) -> usize {
+    pub fn word_end_index_of_first_character(&self, word_separators: &str) -> usize {
         self.columns
             .iter()
             .enumerate()
             .find_map(|(i, t_c)| {
-                if is_selection_boundary_character(t_c.character) {
+                if is_selection_boundary_character(t_c.character, word_separators) {
                     Some(self.absolute_character_index(i))
                 } else {
                     None
@@ -5689,16 +6506,8 @@ impl Row {
     }
 }
 
-fn is_selection_boundary_character(character: char) -> bool {
-    character.is_ascii_whitespace()
-        || character == '['
-        || character == ']'
-        || character == '{'
-        || character == '}'
-        || character == '<'
-        || character == '>'
-        || character == '('
-        || character == ')'
+fn is_selection_boundary_character(character: char, word_separators: &str) -> bool {
+    character.is_ascii_whitespace() || word_separators.contains(character)
 }
 
 #[cfg(test)]

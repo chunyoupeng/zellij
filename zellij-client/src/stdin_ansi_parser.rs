@@ -9,6 +9,8 @@
 use lazy_static::lazy_static;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
+use std::collections::VecDeque;
+use std::time::{Duration, Instant};
 use zellij_utils::{
     data::HostTerminalThemeMode,
     ipc::PixelDimensions,
@@ -63,6 +65,7 @@ pub enum HostReply {
     /// terminal's color-palette theme mode (CSI 2031).
     HostTerminalThemeChanged(HostTerminalThemeMode),
     KittyGraphicsSupport(bool),
+    KittyZlibSupport(bool),
     SixelSupport(bool),
 }
 
@@ -185,7 +188,31 @@ impl HostReply {
 pub struct ForwardSlot {
     pub token: u32,
     pub reply_bytes: Vec<u8>,
+    abandoned: bool,
 }
+
+#[derive(Debug, Clone)]
+enum BatchOwner {
+    Zellij,
+    Pane(ForwardSlot),
+}
+
+#[derive(Debug, Clone)]
+struct QueryBatch {
+    owner: BatchOwner,
+    sent_at: Instant,
+}
+
+pub const PRIMARY_DA_QUERY: &[u8] = b"\x1b[c";
+
+const UNANSWERED_BATCH_EXPIRY: Duration = Duration::from_secs(5);
+
+#[derive(Debug, Clone)]
+pub struct ClipboardForwardSlot {
+    pub token: u32,
+}
+
+pub const CLIENT_CLIPBOARD_FORWARD_TIMEOUT_MS: u64 = 30_000;
 
 /// Return value of `feed()`.
 #[derive(Debug, Clone, Default)]
@@ -197,6 +224,7 @@ pub struct ParseOutput {
     /// single feed would indicate the host emitted two barriers, in which
     /// case only the first is honored.
     pub completed_forward: Option<(u32, Vec<u8>)>,
+    pub completed_clipboard_forward: Option<(u32, Vec<u8>)>,
     /// OSC 99 notification-response payloads (one per OSC 99 found in
     /// the chunk). Routed by the caller as
     /// `InputInstruction::DesktopNotificationResponse`. Lives here, not
@@ -215,6 +243,15 @@ pub struct ParseOutput {
     pub has_partial_state: bool,
 }
 
+fn is_user_input(event: &InputEvent) -> bool {
+    match event {
+        InputEvent::Key(_) | InputEvent::Paste(_) => true,
+        InputEvent::Mouse(mouse_event) => !mouse_event.mouse_buttons.is_empty(),
+        InputEvent::PixelMouse(mouse_event) => !mouse_event.mouse_buttons.is_empty(),
+        _ => false,
+    }
+}
+
 /// Cap on the size of an in-flight partial OSC/CSI buffer. Sized to
 /// pass legitimate OSC 52 clipboard payloads, which carry the entire
 /// clipboard base64-encoded and have no protocol-level limit (images,
@@ -231,7 +268,14 @@ const PASTE_END_MARKER: &[u8] = b"\x1b[201~";
 pub enum PendingPartial {
     None,
     LoneEsc,
+    BareIntroducer,
     ReplyInProgress,
+}
+
+impl PendingPartial {
+    pub fn uses_reply_flush_guard(&self) -> bool {
+        matches!(self, PendingPartial::ReplyInProgress)
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -282,9 +326,8 @@ enum StartupKittyProbe {
 /// Continuous host-reply parser. Lives for the whole client session.
 pub struct StdinAnsiParser {
     inner: InputParser,
-    /// Active forwarding slot: `Some` while a forwarded query is in
-    /// flight, `None` otherwise.
-    active_forward: Option<ForwardSlot>,
+    batches: VecDeque<QueryBatch>,
+    active_clipboard_forward: Option<ClipboardForwardSlot>,
     /// Bytes of an OSC sequence whose terminator hasn't arrived yet.
     /// Carried across feed() calls so the next chunk can complete it.
     partial_osc: Vec<u8>,
@@ -294,13 +337,14 @@ pub struct StdinAnsiParser {
     nested_frame_extractor: nested_session::NestedFrameExtractor,
     in_bracketed_paste: bool,
     startup_kitty_probe: StartupKittyProbe,
+    startup_kitty_zlib_probe: StartupKittyProbe,
     partial_apc: Vec<u8>,
 }
 
 impl std::fmt::Debug for StdinAnsiParser {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("StdinAnsiParser")
-            .field("active_forward", &self.active_forward)
+            .field("batches", &self.batches)
             .field("partial_osc_len", &self.partial_osc.len())
             .field("partial_csi_len", &self.partial_csi.len())
             .finish()
@@ -311,13 +355,15 @@ impl StdinAnsiParser {
     pub fn new() -> Self {
         StdinAnsiParser {
             inner: InputParser::new(),
-            active_forward: None,
+            batches: VecDeque::new(),
+            active_clipboard_forward: None,
             partial_osc: Vec::new(),
             partial_csi: Vec::new(),
             partial_paste: Vec::new(),
             nested_frame_extractor: nested_session::NestedFrameExtractor::new(),
             in_bracketed_paste: false,
             startup_kitty_probe: StartupKittyProbe::NotSent,
+            startup_kitty_zlib_probe: StartupKittyProbe::NotSent,
             partial_apc: Vec::new(),
         }
     }
@@ -326,49 +372,141 @@ impl StdinAnsiParser {
         self.startup_kitty_probe = StartupKittyProbe::AwaitingReply;
     }
 
+    pub fn expect_kitty_zlib_probe_reply(&mut self) {
+        self.startup_kitty_zlib_probe = StartupKittyProbe::AwaitingReply;
+    }
+
     /// Open a forwarding window for `token`. Subsequent reply events that
     /// arrive before the Primary-DA barrier will be accumulated into the
     /// slot's `reply_bytes`, in addition to being dispatched as normal
     /// classified `HostReply` events.
     ///
     /// The server serializes forwarded queries globally (`forward_in_flight`
-    /// on `Screen`), so in a well-behaved session this is only ever called
-    /// when the slot is empty. The guards below catch a misbehaving server
-    /// or a race that reached through: debug builds panic so bugs surface
-    /// during testing, release builds log and clobber the previous slot
-    /// (whose accumulated bytes would otherwise silently leak).
+    /// on `Screen`), but its own backstop timeout can release that slot and
+    /// dispatch the next query before this client's per-slot timer has run,
+    /// so callers hand a still-open slot over with `take_active_forward`
+    /// first. The guards below catch a caller that skipped that handover:
+    /// debug builds panic so bugs surface during testing, release builds
+    /// log and clobber the previous slot (whose accumulated bytes would
+    /// otherwise silently leak).
     pub fn open_forward(&mut self, token: u32) {
+        let existing = self.live_forward().map(|slot| slot.token);
         debug_assert!(
-            self.active_forward.is_none(),
+            existing.is_none(),
             "open_forward({}) called while slot for token {:?} is still active",
             token,
-            self.active_forward.as_ref().map(|s| s.token),
+            existing,
         );
-        if let Some(existing) = self.active_forward.as_ref() {
+        if let Some(existing_token) = existing {
             log::warn!(
-                "open_forward({}) re-entered with existing slot token={} ({} accumulated bytes \
-                 will be dropped); server serialization should have prevented this",
+                "open_forward({}) re-entered with existing slot token={}; abandoning it",
                 token,
-                existing.token,
-                existing.reply_bytes.len(),
+                existing_token,
             );
+            let _ = self.take_active_forward();
         }
-        self.active_forward = Some(ForwardSlot {
-            token,
-            reply_bytes: Vec::new(),
+        self.batches.push_back(QueryBatch {
+            owner: BatchOwner::Pane(ForwardSlot {
+                token,
+                reply_bytes: Vec::new(),
+                abandoned: false,
+            }),
+            sent_at: Instant::now(),
         });
+    }
+
+    pub fn open_own_query_batch(&mut self) {
+        self.batches.push_back(QueryBatch {
+            owner: BatchOwner::Zellij,
+            sent_at: Instant::now(),
+        });
+    }
+
+    pub fn awaiting_replies(&self) -> bool {
+        self.batches
+            .iter()
+            .any(|batch| batch.sent_at.elapsed() < UNANSWERED_BATCH_EXPIRY)
+    }
+
+    fn expire_unanswered_batches(&mut self) {
+        self.batches
+            .retain(|batch| batch.sent_at.elapsed() < UNANSWERED_BATCH_EXPIRY);
+    }
+
+    fn live_forward(&self) -> Option<&ForwardSlot> {
+        self.batches.iter().find_map(|batch| match &batch.owner {
+            BatchOwner::Pane(slot) if !slot.abandoned => Some(slot),
+            _ => None,
+        })
+    }
+
+    fn live_forward_mut(&mut self) -> Option<&mut ForwardSlot> {
+        self.batches
+            .iter_mut()
+            .find_map(|batch| match &mut batch.owner {
+                BatchOwner::Pane(slot) if !slot.abandoned => Some(slot),
+                _ => None,
+            })
+    }
+
+    fn collecting_forward_mut(&mut self) -> Option<&mut ForwardSlot> {
+        match self.batches.front_mut().map(|batch| &mut batch.owner) {
+            Some(BatchOwner::Pane(slot)) if !slot.abandoned => Some(slot),
+            _ => None,
+        }
+    }
+
+    fn abandon(slot: &mut ForwardSlot) -> (u32, Vec<u8>) {
+        slot.abandoned = true;
+        (slot.token, std::mem::take(&mut slot.reply_bytes))
     }
 
     /// Close an active forwarding window without a barrier (timeout path).
     /// Returns the accumulated reply bytes and the token, if any.
     pub fn close_forward_on_timeout(&mut self, token: u32) -> Option<(u32, Vec<u8>)> {
-        match &self.active_forward {
+        match self.live_forward_mut() {
+            Some(slot) if slot.token == token => Some(Self::abandon(slot)),
+            _ => None,
+        }
+    }
+
+    /// Close whatever forwarding window is currently open, whichever token
+    /// it belongs to, and return its token together with the bytes it
+    /// accumulated. Used to hand a slot the server has already given up on
+    /// over to the forward that replaced it, instead of clobbering it.
+    pub fn take_active_forward(&mut self) -> Option<(u32, Vec<u8>)> {
+        self.live_forward_mut().map(Self::abandon)
+    }
+
+    pub fn open_clipboard_forward(&mut self, token: u32) {
+        debug_assert!(
+            self.active_clipboard_forward.is_none(),
+            "open_clipboard_forward({}) called while slot for token {:?} is still active",
+            token,
+            self.active_clipboard_forward.as_ref().map(|s| s.token),
+        );
+        self.active_clipboard_forward = Some(ClipboardForwardSlot { token });
+    }
+
+    pub fn close_clipboard_forward_on_timeout(&mut self, token: u32) -> Option<(u32, Vec<u8>)> {
+        match &self.active_clipboard_forward {
             Some(slot) if slot.token == token => {
-                let slot = self.active_forward.take().unwrap();
-                Some((slot.token, slot.reply_bytes))
+                let slot = self.active_clipboard_forward.take().unwrap();
+                Some((slot.token, Vec::new()))
             },
             _ => None,
         }
+    }
+
+    pub fn take_active_clipboard_forward(&mut self) -> Option<(u32, Vec<u8>)> {
+        self.active_clipboard_forward
+            .take()
+            .map(|slot| (slot.token, Vec::new()))
+    }
+
+    #[cfg(test)]
+    pub fn active_clipboard_forward_token(&self) -> Option<u32> {
+        self.active_clipboard_forward.as_ref().map(|s| s.token)
     }
 
     /// Currently-open slot's token, if any. Test-only inspector;
@@ -376,7 +514,7 @@ impl StdinAnsiParser {
     /// `close_forward_on_timeout`, and `feed()` directly.
     #[cfg(test)]
     pub fn active_forward_token(&self) -> Option<u32> {
-        self.active_forward.as_ref().map(|s| s.token)
+        self.live_forward().map(|s| s.token)
     }
 
     /// Consume a chunk of raw stdin bytes. Returns classified host replies
@@ -386,6 +524,7 @@ impl StdinAnsiParser {
     /// are the bytes the caller should feed to the keyboard parser.
     pub fn feed(&mut self, bytes: &[u8]) -> ParseOutput {
         let mut out = ParseOutput::default();
+        self.expire_unanswered_batches();
         let (bytes, nested_frames) = self.nested_frame_extractor.extract(bytes);
         let bytes = &bytes[..];
         out.nested_frames = nested_frames;
@@ -413,10 +552,20 @@ impl StdinAnsiParser {
                     if payload.starts_with(b"99;") {
                         out.desktop_notifications
                             .push(payload.get(3..).unwrap_or_default().to_vec());
+                        continue;
                     } else if let Some(reply) = HostReply::from_osc_payload(&payload) {
                         out.replies.push(reply);
                     }
-                    if let Some(slot) = self.active_forward.as_mut() {
+                    if payload.starts_with(b"52;") {
+                        if let Some(slot) = self.active_clipboard_forward.take() {
+                            let mut bytes = b"\x1b]".to_vec();
+                            bytes.extend_from_slice(&payload);
+                            bytes.extend_from_slice(b"\x1b\\");
+                            out.completed_clipboard_forward = Some((slot.token, bytes));
+                            continue;
+                        }
+                    }
+                    if let Some(slot) = self.collecting_forward_mut() {
                         // Re-serialize so the pane's pty sees a legal OSC.
                         // Terminators vary by host; ST (ESC \) is always safe.
                         slot.reply_bytes.extend_from_slice(b"\x1b]");
@@ -436,23 +585,38 @@ impl StdinAnsiParser {
                                 self.startup_kitty_probe = StartupKittyProbe::Resolved;
                                 out.replies.push(HostReply::KittyGraphicsSupport(false));
                             }
+                            if self.startup_kitty_zlib_probe == StartupKittyProbe::AwaitingReply {
+                                self.startup_kitty_zlib_probe = StartupKittyProbe::Resolved;
+                                out.replies.push(HostReply::KittyZlibSupport(false));
+                            }
                             if let Some(reply) = HostReply::sixel_support_from_primary_da(&raw) {
                                 out.replies.push(reply);
                             }
                             // Primary-DA — the barrier. Close the slot and
                             // emit the completed forwarded reply if active.
-                            if let Some(slot) = self.active_forward.take() {
-                                out.completed_forward = Some((slot.token, slot.reply_bytes));
+                            if let Some(QueryBatch {
+                                owner: BatchOwner::Pane(slot),
+                                ..
+                            }) = self.batches.pop_front()
+                            {
+                                if !slot.abandoned {
+                                    out.completed_forward = Some((slot.token, slot.reply_bytes));
+                                }
                             }
                             // Primary-DA is NOT double-dispatched — it has
                             // no cached-state counterpart.
                         },
                         _ => {
-                            if let Some(reply) = HostReply::from_csi_report(&raw) {
+                            let reply = HostReply::from_csi_report(&raw);
+                            let is_theme_notification =
+                                matches!(reply, Some(HostReply::HostTerminalThemeChanged(_)));
+                            if let Some(reply) = reply {
                                 out.replies.push(reply);
                             }
-                            if let Some(slot) = self.active_forward.as_mut() {
-                                slot.reply_bytes.extend_from_slice(&raw);
+                            if !is_theme_notification {
+                                if let Some(slot) = self.collecting_forward_mut() {
+                                    slot.reply_bytes.extend_from_slice(&raw);
+                                }
                             }
                             // Suppress unused-variable warning for params.
                             let _ = params;
@@ -467,7 +631,16 @@ impl StdinAnsiParser {
                 // input bytes that are NOT part of a classified reply. To
                 // produce that residue deterministically, we re-scan the
                 // buffer a second time below.
-                _ => {},
+                other => {
+                    if self.active_clipboard_forward.is_some()
+                        && is_user_input(&other)
+                        && out.completed_clipboard_forward.is_none()
+                    {
+                        if let Some(slot) = self.active_clipboard_forward.take() {
+                            out.completed_clipboard_forward = Some((slot.token, Vec::new()));
+                        }
+                    }
+                },
             }
         }
         // Produce the residue: replay the input through a scratch parser
@@ -486,6 +659,15 @@ impl StdinAnsiParser {
     }
 
     pub fn pending_partial(&self) -> PendingPartial {
+        match self.classify_partial() {
+            PendingPartial::LoneEsc | PendingPartial::BareIntroducer if self.awaiting_replies() => {
+                PendingPartial::ReplyInProgress
+            },
+            partial => partial,
+        }
+    }
+
+    fn classify_partial(&self) -> PendingPartial {
         if !self.partial_paste.is_empty() || !self.partial_apc.is_empty() {
             PendingPartial::ReplyInProgress
         } else if self.partial_csi.is_empty()
@@ -499,26 +681,35 @@ impl StdinAnsiParser {
             PendingPartial::None
         } else if self.partial_csi.is_empty() && self.partial_osc == [0x1b] {
             PendingPartial::LoneEsc
+        } else if self.partial_csi.is_empty() && self.partial_osc == [0x1b, b']'] {
+            PendingPartial::BareIntroducer
+        } else if self.partial_osc.is_empty() && self.partial_csi == [0x1b, b'['] {
+            PendingPartial::BareIntroducer
         } else {
             PendingPartial::ReplyInProgress
         }
     }
 
-    pub fn finalize_lone_esc(&mut self) -> Vec<u8> {
-        if self.partial_csi.is_empty()
-            && self.partial_paste.is_empty()
-            && self.partial_osc.is_empty()
-            && self.nested_frame_extractor.partial_bytes() == [0x1b]
-        {
-            self.nested_frame_extractor.take_partial()
-        } else if self.partial_csi.is_empty()
-            && self.partial_paste.is_empty()
-            && self.nested_frame_extractor.partial_bytes().is_empty()
-            && self.partial_osc == [0x1b]
-        {
-            std::mem::take(&mut self.partial_osc)
-        } else {
-            Vec::new()
+    pub fn finalize_fast_partial(&mut self) -> Vec<u8> {
+        let drained = self.take_fast_partial();
+        if !drained.is_empty() {
+            self.inner = InputParser::new();
+        }
+        drained
+    }
+
+    fn take_fast_partial(&mut self) -> Vec<u8> {
+        match self.pending_partial() {
+            PendingPartial::LoneEsc | PendingPartial::BareIntroducer => {
+                if !self.nested_frame_extractor.partial_bytes().is_empty() {
+                    self.nested_frame_extractor.take_partial()
+                } else if !self.partial_osc.is_empty() {
+                    std::mem::take(&mut self.partial_osc)
+                } else {
+                    std::mem::take(&mut self.partial_csi)
+                }
+            },
+            PendingPartial::None | PendingPartial::ReplyInProgress => Vec::new(),
         }
     }
 
@@ -537,6 +728,9 @@ impl StdinAnsiParser {
         out.append(&mut self.partial_paste);
         out.append(&mut partial_nested_frame);
         out.append(&mut self.partial_apc);
+        if !out.is_empty() {
+            self.inner = InputParser::new();
+        }
         out
     }
 
@@ -574,6 +768,15 @@ impl StdinAnsiParser {
                                 payload, b"i=31;OK",
                             )));
                             self.startup_kitty_probe = StartupKittyProbe::Resolved;
+                        }
+                        if self.startup_kitty_zlib_probe == StartupKittyProbe::AwaitingReply
+                            && payload.first() == Some(&b'G')
+                            && contains_subslice(payload, b"i=32")
+                        {
+                            replies.push(HostReply::KittyZlibSupport(contains_subslice(
+                                payload, b"i=32;OK",
+                            )));
+                            self.startup_kitty_zlib_probe = StartupKittyProbe::Resolved;
                         }
                         i += len;
                         continue;
@@ -859,6 +1062,27 @@ pub fn schedule_forward_timeout<F>(
     runtime.spawn(async move {
         tokio::time::sleep(deadline).await;
         let payload = parser.lock().unwrap().close_forward_on_timeout(token);
+        if let Some((t, bytes)) = payload {
+            on_timeout(t, bytes);
+        }
+    });
+}
+
+pub fn schedule_clipboard_forward_timeout<F>(
+    runtime: &tokio::runtime::Handle,
+    parser: Arc<Mutex<StdinAnsiParser>>,
+    token: u32,
+    deadline: std::time::Duration,
+    on_timeout: F,
+) where
+    F: FnOnce(u32, Vec<u8>) + Send + 'static,
+{
+    runtime.spawn(async move {
+        tokio::time::sleep(deadline).await;
+        let payload = parser
+            .lock()
+            .unwrap()
+            .close_clipboard_forward_on_timeout(token);
         if let Some((t, bytes)) = payload {
             on_timeout(t, bytes);
         }

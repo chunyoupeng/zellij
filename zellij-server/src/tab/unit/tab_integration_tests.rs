@@ -1,23 +1,23 @@
 use super::{Output, Tab};
 use crate::panes::kitty_graphics::KittyImageStore;
 use crate::panes::sixel::SixelImageStore;
-use crate::screen::CopyOptions;
+use crate::screen::{CopyOptions, ScreenInstruction};
 use crate::Arc;
 use zellij_utils::input::options::PaneFrameStyle;
 
 use crate::{
     os_input_output::ServerOsApi, pane_groups::PaneGroups, panes::PaneId,
-    plugins::PluginInstruction, thread_bus::ThreadSenders, ClientId, ServerInstruction,
+    plugins::PluginInstruction, thread_bus::ThreadSenders, ClientId,
 };
 use std::net::{IpAddr, Ipv4Addr};
 use std::path::PathBuf;
 use std::sync::Mutex;
 
 use zellij_utils::channels::Receiver;
-use zellij_utils::data::Direction;
 use zellij_utils::data::Resize;
 use zellij_utils::data::ResizeStrategy;
 use zellij_utils::data::WebSharing;
+use zellij_utils::data::{BorderStyle, BorderStyleOverride, Direction, LineStyle};
 use zellij_utils::envs::set_session_name;
 use zellij_utils::errors::{prelude::*, ErrorContext};
 use zellij_utils::input::layout::{
@@ -67,6 +67,7 @@ impl ServerOsApi for FakeInputOutput {
         _file_to_open: TerminalAction,
         _quit_db: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
         _default_editor: Option<PathBuf>,
+        _pane_env: &crate::os_input_output::PaneEnv,
     ) -> Result<(u32, Box<dyn AsyncReader>, Option<u32>)> {
         unimplemented!()
     }
@@ -94,19 +95,18 @@ impl ServerOsApi for FakeInputOutput {
     fn send_to_client(&self, _client_id: ClientId, _msg: ServerToClientMsg) -> Result<()> {
         unimplemented!()
     }
-    fn new_client(
+    fn register_client(
         &mut self,
         _client_id: ClientId,
-        _stream: LocalSocketStream,
-    ) -> Result<IpcReceiverWithContext<ClientToServerMsg>> {
+        _receiver: &IpcReceiverWithContext<ClientToServerMsg>,
+    ) -> Result<()> {
         unimplemented!()
     }
-    fn new_client_with_reply(
+    fn register_client_with_reply(
         &mut self,
         _client_id: ClientId,
-        _stream: LocalSocketStream,
         _reply_stream: LocalSocketStream,
-    ) -> Result<IpcReceiverWithContext<ClientToServerMsg>> {
+    ) -> Result<()> {
         unimplemented!()
     }
     fn remove_client(&mut self, _client_id: ClientId) -> Result<()> {
@@ -131,6 +131,7 @@ impl ServerOsApi for FakeInputOutput {
         _terminal_id: u32,
         _run_command: RunCommand,
         _quit_cb: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
+        _pane_env: &crate::os_input_output::PaneEnv,
     ) -> Result<(Box<dyn AsyncReader>, Option<u32>)> {
         unimplemented!()
     }
@@ -259,6 +260,7 @@ fn create_new_tab(size: Size, default_mode: ModeInfo) -> Tab {
         draw_pane_frames,
         auto_layout,
         connected_clients,
+        Rc::new(RefCell::new(HashMap::new())),
         session_is_mirrored,
         Some(client_id),
         copy_options,
@@ -278,12 +280,12 @@ fn create_new_tab(size: Size, default_mode: ModeInfo) -> Tab {
         currently_marking_pane_group,
         advanced_mouse_actions,
         mouse_scroll_resize,
-        true,  // mouse_hover_effects
+        true, // mouse_hover_effects
+        true,
         false, // focus_follows_mouse
         false, // mouse_click_through
         web_server_ip,
         web_server_port,
-        0, // mobile_tab_count
     );
     tab.apply_layout(
         TiledPaneLayout::default(),
@@ -357,6 +359,7 @@ fn create_new_tab_with_stacked_pane_list(
         draw_pane_frames,
         auto_layout,
         connected_clients,
+        Rc::new(RefCell::new(HashMap::new())),
         session_is_mirrored,
         Some(client_id),
         copy_options,
@@ -377,11 +380,11 @@ fn create_new_tab_with_stacked_pane_list(
         advanced_mouse_actions,
         mouse_scroll_resize,
         true,
+        true,
         false,
         false,
         web_server_ip,
         web_server_port,
-        0,
     );
     let (base_layout, new_terminal_ids) =
         base_layout_and_ids.unwrap_or_else(|| (TiledPaneLayout::default(), vec![(1, None)]));
@@ -451,6 +454,7 @@ fn create_new_tab_without_pane_frames(size: Size, default_mode: ModeInfo) -> Tab
         draw_pane_frames,
         auto_layout,
         connected_clients,
+        Rc::new(RefCell::new(HashMap::new())),
         session_is_mirrored,
         Some(client_id),
         copy_options,
@@ -470,12 +474,12 @@ fn create_new_tab_without_pane_frames(size: Size, default_mode: ModeInfo) -> Tab
         currently_marking_pane_group,
         advanced_mouse_actions,
         mouse_scroll_resize,
-        true,  // mouse_hover_effects
+        true, // mouse_hover_effects
+        true,
         false, // focus_follows_mouse
         false, // mouse_click_through
         web_server_ip,
         web_server_port,
-        0, // mobile_tab_count
     );
     tab.apply_layout(
         TiledPaneLayout::default(),
@@ -562,6 +566,7 @@ fn create_new_tab_with_swap_layouts(
         },
         auto_layout,
         connected_clients,
+        Rc::new(RefCell::new(HashMap::new())),
         session_is_mirrored,
         Some(client_id),
         copy_options,
@@ -581,12 +586,12 @@ fn create_new_tab_with_swap_layouts(
         currently_marking_pane_group,
         advanced_mouse_actions,
         mouse_scroll_resize,
-        true,  // mouse_hover_effects
+        true, // mouse_hover_effects
+        true,
         false, // focus_follows_mouse
         false, // mouse_click_through
         web_server_ip,
         web_server_port,
-        0, // mobile_tab_count
     );
     let (
         base_layout,
@@ -670,6 +675,7 @@ fn create_new_tab_with_os_api(
         draw_pane_frames,
         auto_layout,
         connected_clients,
+        Rc::new(RefCell::new(HashMap::new())),
         session_is_mirrored,
         Some(client_id),
         copy_options,
@@ -689,12 +695,12 @@ fn create_new_tab_with_os_api(
         currently_marking_pane_group,
         advanced_mouse_actions,
         mouse_scroll_resize,
-        true,  // mouse_hover_effects
+        true, // mouse_hover_effects
+        true,
         false, // focus_follows_mouse
         false, // mouse_click_through
         web_server_ip,
         web_server_port,
-        0, // mobile_tab_count
     );
     tab.apply_layout(
         TiledPaneLayout::default(),
@@ -764,6 +770,7 @@ fn create_new_tab_with_layout(size: Size, default_mode: ModeInfo, layout: &str) 
         draw_pane_frames,
         auto_layout,
         connected_clients,
+        Rc::new(RefCell::new(HashMap::new())),
         session_is_mirrored,
         Some(client_id),
         copy_options,
@@ -783,12 +790,12 @@ fn create_new_tab_with_layout(size: Size, default_mode: ModeInfo, layout: &str) 
         currently_marking_pane_group,
         advanced_mouse_actions,
         mouse_scroll_resize,
-        true,  // mouse_hover_effects
+        true, // mouse_hover_effects
+        true,
         false, // focus_follows_mouse
         false, // mouse_click_through
         web_server_ip,
         web_server_port,
-        0, // mobile_tab_count
     );
     let pane_ids = tab_layout
         .extract_run_instructions()
@@ -872,6 +879,7 @@ fn create_new_tab_with_mock_pty_writer(
         draw_pane_frames,
         auto_layout,
         connected_clients,
+        Rc::new(RefCell::new(HashMap::new())),
         session_is_mirrored,
         Some(client_id),
         copy_options,
@@ -891,12 +899,12 @@ fn create_new_tab_with_mock_pty_writer(
         currently_marking_pane_group,
         advanced_mouse_actions,
         mouse_scroll_resize,
-        true,  // mouse_hover_effects
+        true, // mouse_hover_effects
+        true,
         false, // focus_follows_mouse
         false, // mouse_click_through
         web_server_ip,
         web_server_port,
-        0, // mobile_tab_count
     );
     tab.apply_layout(
         TiledPaneLayout::default(),
@@ -971,6 +979,7 @@ fn create_new_tab_with_sixel_support(
         draw_pane_frames,
         auto_layout,
         connected_clients,
+        Rc::new(RefCell::new(HashMap::new())),
         session_is_mirrored,
         Some(client_id),
         copy_options,
@@ -990,12 +999,12 @@ fn create_new_tab_with_sixel_support(
         currently_marking_pane_group,
         advanced_mouse_actions,
         mouse_scroll_resize,
-        true,  // mouse_hover_effects
+        true, // mouse_hover_effects
+        true,
         false, // focus_follows_mouse
         false, // mouse_click_through
         web_server_ip,
         web_server_port,
-        0, // mobile_tab_count
     );
     tab.apply_layout(
         TiledPaneLayout::default(),
@@ -1558,6 +1567,7 @@ fn new_stacked_pane() {
         NewPanePlacement::Stacked {
             pane_id_to_stack_under: None,
             borderless: None,
+            border_style: None,
         },
         Some(client_id),
         None,
@@ -1571,6 +1581,52 @@ fn new_stacked_pane() {
         Palette::default(),
     );
     assert_snapshot!(snapshot);
+}
+
+fn sorted_kitty_visible_pane_ids(tab: &Tab) -> Vec<PaneId> {
+    let mut pane_ids: Vec<PaneId> = tab.kitty_visible_pane_ids().into_iter().collect();
+    pane_ids.sort();
+    pane_ids
+}
+
+#[test]
+fn kitty_visible_panes_exclude_collapsed_stack_members() {
+    let size = Size {
+        cols: 121,
+        rows: 20,
+    };
+    let client_id = 1;
+    let mut tab = create_new_tab(size, ModeInfo::default());
+    for i in 2..4 {
+        tab.new_pane(
+            PaneId::Terminal(i),
+            None,
+            None,
+            false,
+            true,
+            NewPanePlacement::Stacked {
+                pane_id_to_stack_under: None,
+                borderless: None,
+                border_style: None,
+            },
+            Some(client_id),
+            None,
+        )
+        .unwrap();
+    }
+    let visible_before_focus_change = sorted_kitty_visible_pane_ids(&tab);
+    tab.move_focus_up(client_id).unwrap();
+    let visible_after_focus_change = sorted_kitty_visible_pane_ids(&tab);
+    assert_eq!(
+        visible_before_focus_change,
+        vec![PaneId::Terminal(3)],
+        "only the expanded stack member is kitty visible"
+    );
+    assert_eq!(
+        visible_after_focus_change,
+        vec![PaneId::Terminal(2)],
+        "kitty visibility follows the expanded stack member"
+    );
 }
 
 #[test]
@@ -5031,6 +5087,66 @@ fn titles_frame_style_with_fixed_size_pane() {
     assert_snapshot!(snapshot);
 }
 
+fn render_split_row_of_ui_panes_at_top(pane_frame_style: PaneFrameStyle) -> String {
+    let layout = r#"
+        layout {
+            pane size=1 split_direction="vertical" {
+                pane size=55
+                pane
+            }
+            pane
+        }
+    "#;
+    let size = Size {
+        cols: 121,
+        rows: 20,
+    };
+    let client_id = 1;
+    let mut tab = create_new_tab_with_layout(size, ModeInfo::default(), layout);
+    tab.set_pane_frames(pane_frame_style);
+    let mut panes_by_position: Vec<(usize, usize, u32)> = tab
+        .tiled_panes
+        .get_panes()
+        .filter_map(|(pane_id, pane)| match pane_id {
+            PaneId::Terminal(terminal_id) => Some((pane.y(), pane.x(), *terminal_id)),
+            PaneId::Plugin(_) => None,
+        })
+        .collect();
+    panes_by_position.sort_unstable();
+    let [(_, _, left_bar_id), (_, _, right_bar_id), (_, _, main_pane_id)] = panes_by_position[..]
+    else {
+        panic!("unexpected panes: {:?}", panes_by_position);
+    };
+    tab.set_pane_selectable(PaneId::Terminal(left_bar_id), false);
+    tab.set_pane_selectable(PaneId::Terminal(right_bar_id), false);
+    tab.handle_pty_bytes(left_bar_id, Vec::from("I am the left bar".as_bytes()))
+        .unwrap();
+    tab.handle_pty_bytes(right_bar_id, Vec::from("I am the right bar".as_bytes()))
+        .unwrap();
+    tab.handle_pty_bytes(main_pane_id, Vec::from("I am the main pane".as_bytes()))
+        .unwrap();
+    let mut output = Output::default();
+    tab.render(&mut output, None).unwrap();
+    take_snapshot(
+        output.serialize().unwrap().get(&client_id).unwrap(),
+        size.rows,
+        size.cols,
+        Palette::default(),
+    )
+}
+
+#[test]
+fn titles_frame_style_with_split_row_of_ui_panes_at_top() {
+    let snapshot = render_split_row_of_ui_panes_at_top(PaneFrameStyle::Titles);
+    assert_snapshot!(snapshot);
+}
+
+#[test]
+fn no_frame_style_with_split_row_of_ui_panes_at_top() {
+    let snapshot = render_split_row_of_ui_panes_at_top(PaneFrameStyle::None);
+    assert_snapshot!(snapshot);
+}
+
 #[test]
 fn tab_with_nested_layout() {
     let layout = r#"
@@ -5112,7 +5228,7 @@ fn pane_bracketed_paste_ignored_when_not_in_bracketed_paste_mode() {
         cols: 121,
         rows: 20,
     };
-    let client_id: u16 = 1;
+    let client_id: ClientId = 1;
 
     let mut pty_instruction_bus = MockPtyInstructionBus::new();
     let mut tab = create_new_tab_with_mock_pty_writer(
@@ -5142,7 +5258,7 @@ fn pane_faux_scrolling_in_alternate_mode() {
         cols: 121,
         rows: 20,
     };
-    let client_id: u16 = 1;
+    let client_id: ClientId = 1;
     let lines_to_scroll = 3;
 
     let mut pty_instruction_bus = MockPtyInstructionBus::new();
@@ -5187,6 +5303,104 @@ fn pane_faux_scrolling_in_alternate_mode() {
     expected.append(&mut vec!["\u{1b}OB"; lines_to_scroll]);
 
     assert_eq!(pty_instruction_bus.clone_output(), expected);
+}
+
+fn horizontal_scroll_output_for_mouse_mode(mouse_mode: &str) -> Vec<String> {
+    let size = Size {
+        cols: 121,
+        rows: 20,
+    };
+    let client_id = 1;
+
+    let mut pty_instruction_bus = MockPtyInstructionBus::new();
+    let mut tab = create_new_tab_with_mock_pty_writer(
+        size,
+        ModeInfo::default(),
+        pty_instruction_bus.pty_write_sender(),
+    );
+    pty_instruction_bus.start();
+
+    tab.handle_pty_bytes(1, mouse_mode.as_bytes().to_vec())
+        .unwrap();
+    tab.handle_mouse_event(
+        &MouseEvent::new_scroll_left_event(Position::new(5, 71)),
+        client_id,
+    )
+    .unwrap();
+    tab.handle_mouse_event(
+        &MouseEvent::new_scroll_right_event(Position::new(5, 71)),
+        client_id,
+    )
+    .unwrap();
+
+    pty_instruction_bus.exit();
+    pty_instruction_bus.clone_output()
+}
+
+#[test]
+fn pane_in_sgr_mouse_mode_receives_horizontal_scroll() {
+    assert_eq!(
+        horizontal_scroll_output_for_mouse_mode("\u{1b}[?1000;1006h"),
+        vec![
+            "\u{1b}[<66;71;5M".to_string(),
+            "\u{1b}[<67;71;5M".to_string(),
+        ]
+    );
+}
+
+#[test]
+fn pane_in_utf8_mouse_mode_receives_horizontal_scroll() {
+    assert_eq!(
+        horizontal_scroll_output_for_mouse_mode("\u{1b}[?1000;1005h"),
+        vec!["\u{1b}[Mbg%".to_string(), "\u{1b}[Mcg%".to_string()]
+    );
+}
+
+#[test]
+fn horizontal_scroll_is_not_sent_to_panes_without_mouse_tracking() {
+    let size = Size {
+        cols: 121,
+        rows: 20,
+    };
+    let client_id: ClientId = 1;
+
+    let mut pty_instruction_bus = MockPtyInstructionBus::new();
+    let mut tab = create_new_tab_with_mock_pty_writer(
+        size,
+        ModeInfo::default(),
+        pty_instruction_bus.pty_write_sender(),
+    );
+    pty_instruction_bus.start();
+
+    tab.handle_mouse_event(
+        &MouseEvent::new_scroll_left_event(Position::new(1, 1)),
+        client_id,
+    )
+    .unwrap();
+    tab.handle_mouse_event(
+        &MouseEvent::new_scroll_right_event(Position::new(1, 1)),
+        client_id,
+    )
+    .unwrap();
+
+    tab.handle_pty_bytes(1, "\u{1b}[?1049h".as_bytes().to_vec())
+        .unwrap();
+    tab.handle_mouse_event(
+        &MouseEvent::new_scroll_left_event(Position::new(1, 1)),
+        client_id,
+    )
+    .unwrap();
+    tab.handle_mouse_event(
+        &MouseEvent::new_scroll_right_event(Position::new(1, 1)),
+        client_id,
+    )
+    .unwrap();
+    tab.handle_scrollwheel_up(&Position::new(1, 1), 1, client_id)
+        .unwrap();
+
+    pty_instruction_bus.exit();
+
+    assert_eq!(pty_instruction_bus.clone_output(), vec!["\u{1b}[A"]);
 }
 
 #[test]
@@ -5481,6 +5695,180 @@ fn can_swap_tiled_layout_at_runtime() {
 }
 
 #[test]
+fn can_apply_named_tiled_layout_while_floating_pane_is_visible() {
+    let size = Size {
+        cols: 121,
+        rows: 20,
+    };
+    let client_id = 1;
+    let swap_layouts = r#"
+        layout {
+            swap_tiled_layout name="vertical" {
+                tab max_panes=2 split_direction="vertical" {
+                    pane
+                    pane
+                }
+            }
+            swap_tiled_layout name="horizontal" {
+                tab max_panes=2 {
+                    pane
+                    pane
+                }
+            }
+            swap_tiled_layout name="one-pane" {
+                tab max_panes=1 {
+                    pane
+                }
+            }
+        }
+    "#;
+    let layout = Layout::from_kdl(swap_layouts, Some("file_name.kdl".into()), None, None).unwrap();
+    let mut tab = create_new_tab_with_swap_layouts(
+        size,
+        ModeInfo::default(),
+        (
+            layout.swap_tiled_layouts.clone(),
+            layout.swap_floating_layouts.clone(),
+        ),
+        None,
+        true,
+        true,
+    );
+
+    tab.new_pane(
+        PaneId::Terminal(2),
+        None,
+        None,
+        false,
+        true,
+        NewPanePlacement::default(),
+        Some(client_id),
+        None,
+    )
+    .unwrap();
+    tab.toggle_floating_panes(Some(client_id), None, None)
+        .unwrap();
+    tab.new_pane(
+        PaneId::Terminal(3),
+        None,
+        None,
+        false,
+        true,
+        NewPanePlacement::default(),
+        Some(client_id),
+        None,
+    )
+    .unwrap();
+    let focused_floating_pane = tab.get_active_pane_id(client_id);
+    let initial_layout = tab.swap_layout_info();
+
+    for unavailable_layout in ["missing", "one-pane"] {
+        assert!(!tab.apply_tiled_swap_layout(unavailable_layout).unwrap());
+        assert_eq!(tab.swap_layout_info(), initial_layout);
+        assert!(tab.are_floating_panes_visible());
+        assert_eq!(tab.get_active_pane_id(client_id), focused_floating_pane);
+    }
+
+    assert!(tab.apply_tiled_swap_layout("horizontal").unwrap());
+    assert!(tab.are_floating_panes_visible());
+    assert_eq!(tab.get_active_pane_id(client_id), focused_floating_pane);
+
+    tab.toggle_floating_panes(Some(client_id), None, None)
+        .unwrap();
+    assert_eq!(
+        tab.swap_layout_info(),
+        (Some("horizontal".to_owned()), false)
+    );
+}
+
+#[test]
+fn can_apply_named_floating_layout_while_floating_panes_are_hidden() {
+    let size = Size {
+        cols: 121,
+        rows: 20,
+    };
+    let client_id = 1;
+    let swap_layouts = r#"
+        layout {
+            swap_floating_layout name="staggered" {
+                floating_panes max_panes=2 {
+                    pane
+                    pane
+                }
+            }
+            swap_floating_layout name="centered" {
+                floating_panes max_panes=2 {
+                    pane x="10%" y="10%"
+                    pane x="20%" y="20%"
+                }
+            }
+            swap_floating_layout name="one-pane" {
+                floating_panes max_panes=1 {
+                    pane
+                }
+            }
+        }
+    "#;
+    let layout = Layout::from_kdl(swap_layouts, Some("file_name.kdl".into()), None, None).unwrap();
+    let mut tab = create_new_tab_with_swap_layouts(
+        size,
+        ModeInfo::default(),
+        (
+            layout.swap_tiled_layouts.clone(),
+            layout.swap_floating_layouts.clone(),
+        ),
+        None,
+        true,
+        true,
+    );
+
+    tab.toggle_floating_panes(Some(client_id), None, None)
+        .unwrap();
+    tab.new_pane(
+        PaneId::Terminal(2),
+        None,
+        None,
+        false,
+        true,
+        NewPanePlacement::default(),
+        Some(client_id),
+        None,
+    )
+    .unwrap();
+    tab.new_pane(
+        PaneId::Terminal(3),
+        None,
+        None,
+        false,
+        true,
+        NewPanePlacement::default(),
+        Some(client_id),
+        None,
+    )
+    .unwrap();
+    tab.toggle_floating_panes(Some(client_id), None, None)
+        .unwrap();
+    let focused_tiled_pane = tab.get_active_pane_id(client_id);
+    let initial_layout = tab.swap_layout_info();
+
+    for unavailable_layout in ["missing", "one-pane"] {
+        assert!(!tab.apply_floating_swap_layout(unavailable_layout).unwrap());
+        assert_eq!(tab.swap_layout_info(), initial_layout);
+        assert!(!tab.are_floating_panes_visible());
+        assert_eq!(tab.get_active_pane_id(client_id), focused_tiled_pane);
+    }
+
+    assert!(tab.apply_floating_swap_layout("centered").unwrap());
+    assert!(!tab.are_floating_panes_visible());
+    assert_eq!(tab.swap_layout_info(), initial_layout);
+    assert_eq!(tab.get_active_pane_id(client_id), focused_tiled_pane);
+
+    tab.toggle_floating_panes(Some(client_id), None, None)
+        .unwrap();
+    assert_eq!(tab.swap_layout_info(), (Some("centered".to_owned()), false));
+}
+
+#[test]
 fn can_swap_floating_layout_at_runtime() {
     let size = Size {
         cols: 121,
@@ -5731,43 +6119,49 @@ fn swap_tiled_layout_with_only_stacked_children() {
         true,
         stacked_resize,
     );
-    let new_pane_id_1 = PaneId::Terminal(2);
-    let new_pane_id_2 = PaneId::Terminal(3);
-    let new_pane_id_3 = PaneId::Terminal(4);
+    let new_pane_ids = [2, 3, 4, 5].map(PaneId::Terminal);
+    let open_pane = |tab: &mut Tab, pane_id| {
+        tab.new_pane(
+            pane_id,
+            None,
+            None,
+            false,
+            true,
+            NewPanePlacement::default(),
+            Some(client_id),
+            None,
+        )
+        .unwrap();
+    };
+    let stack_order = |tab: &Tab| {
+        let mut panes = tab
+            .tiled_panes
+            .get_panes()
+            .filter_map(|(pane_id, pane)| {
+                let geom = pane.current_geom();
+                geom.is_stacked().then_some((geom.y, *pane_id))
+            })
+            .collect::<Vec<_>>();
+        panes.sort_unstable();
+        panes
+            .into_iter()
+            .map(|(_, pane_id)| pane_id)
+            .collect::<Vec<_>>()
+    };
 
-    tab.new_pane(
-        new_pane_id_1,
-        None,
-        None,
-        false,
-        true,
-        NewPanePlacement::default(),
-        Some(client_id),
-        None,
-    )
-    .unwrap();
-    tab.new_pane(
-        new_pane_id_2,
-        None,
-        None,
-        false,
-        true,
-        NewPanePlacement::default(),
-        Some(client_id),
-        None,
-    )
-    .unwrap();
-    tab.new_pane(
-        new_pane_id_3,
-        None,
-        None,
-        false,
-        true,
-        NewPanePlacement::default(),
-        Some(client_id),
-        None,
-    )
-    .unwrap();
+    for pane_id in &new_pane_ids[..3] {
+        open_pane(&mut tab, *pane_id);
+    }
+    tab.move_focus_up(client_id).unwrap();
+    open_pane(&mut tab, new_pane_ids[3]);
+    let mut expected_order = vec![PaneId::Terminal(1)];
+    expected_order.extend(new_pane_ids);
+    assert_eq!(stack_order(&tab), expected_order);
+    tab.close_pane(new_pane_ids[1], false, None);
+    expected_order.remove(2);
+    assert_eq!(stack_order(&tab), expected_order);
+    tab.next_swap_layout().unwrap();
+    assert_eq!(stack_order(&tab), expected_order);
     tab.render(&mut output, None).unwrap();
     let snapshot = take_snapshot(
         output.serialize().unwrap().get(&client_id).unwrap(),
@@ -6382,9 +6776,9 @@ fn focus_last_stacked_pane() {
         None,
     )
     .unwrap();
-    tab.move_focus_right(client_id);
-    tab.move_focus_up(client_id);
-    tab.move_focus_up(client_id);
+    tab.move_focus_right(client_id).unwrap();
+    tab.move_focus_up(client_id).unwrap();
+    tab.move_focus_up(client_id).unwrap();
     tab.focus_last_pane(client_id);
     tab.render(&mut output, None).unwrap();
     let snapshot = take_snapshot(
@@ -10618,6 +11012,7 @@ fn borderless_floating_pane() {
         height: Some(PercentOrFixed::Fixed(10)),
         pinned: None,
         borderless: Some(true),
+        border_style: None,
     };
 
     tab.new_floating_pane(
@@ -10665,6 +11060,7 @@ fn borderless_pane_content_fills_edges() {
         height: Some(PercentOrFixed::Fixed(5)),
         pinned: None,
         borderless: Some(true),
+        border_style: None,
     };
 
     tab.new_floating_pane(
@@ -10713,6 +11109,7 @@ fn borderless_pinned_floating_pane() {
         height: Some(PercentOrFixed::Fixed(8)),
         pinned: Some(true),
         borderless: Some(true),
+        border_style: None,
     };
 
     tab.new_floating_pane(
@@ -10765,6 +11162,7 @@ fn cursor_hidden_when_floating_pane_is_under_pinned_pane() {
         height: Some(PercentOrFixed::Fixed(10)),
         pinned: Some(false),
         borderless: Some(false),
+        border_style: None,
     };
 
     tab.new_floating_pane(
@@ -10786,6 +11184,7 @@ fn cursor_hidden_when_floating_pane_is_under_pinned_pane() {
         height: Some(PercentOrFixed::Fixed(8)),
         pinned: Some(true),
         borderless: Some(false),
+        border_style: None,
     };
 
     tab.new_floating_pane(
@@ -10845,6 +11244,7 @@ fn cursor_visible_when_pinned_pane_is_focused() {
         height: Some(PercentOrFixed::Fixed(10)),
         pinned: Some(false),
         borderless: Some(false),
+        border_style: None,
     };
 
     tab.new_floating_pane(
@@ -10866,6 +11266,7 @@ fn cursor_visible_when_pinned_pane_is_focused() {
         height: Some(PercentOrFixed::Fixed(8)),
         pinned: Some(true),
         borderless: Some(false),
+        border_style: None,
     };
 
     tab.new_floating_pane(
@@ -10971,6 +11372,63 @@ fn test_left_release_after_selection_copies_to_clipboard() {
 
     // Verify clipboard message was sent
     assert!(release_effect.leave_clipboard_message);
+}
+
+#[test]
+fn triple_click_without_motion_requests_render() {
+    let size = Size {
+        cols: 121,
+        rows: 20,
+    };
+    let client_id = 1;
+    let mut tab = create_new_tab(size, ModeInfo::default());
+    let position = Position::new(1, 5);
+
+    tab.handle_pty_bytes(1, Vec::from("Selectable text content here".as_bytes()))
+        .unwrap();
+
+    for _ in 0..2 {
+        tab.handle_mouse_event(&MouseEvent::new_left_press_event(position), client_id)
+            .unwrap();
+        tab.handle_mouse_event(&MouseEvent::new_left_release_event(position), client_id)
+            .unwrap();
+    }
+
+    let effect = tab
+        .handle_mouse_event(&MouseEvent::new_left_press_event(position), client_id)
+        .unwrap();
+
+    assert!(effect.state_changed);
+}
+
+#[test]
+fn configured_word_separators_reach_the_pane_on_double_click() {
+    let size = Size {
+        cols: 121,
+        rows: 20,
+    };
+    let client_id = 1;
+    let mut tab = create_new_tab(size, ModeInfo::default());
+    let position = Position::new(1, 6);
+
+    tab.update_selection_options(true, ":".to_owned());
+    tab.handle_pty_bytes(1, Vec::from("foo:bar baz".as_bytes()))
+        .unwrap();
+
+    tab.handle_mouse_event(&MouseEvent::new_left_press_event(position), client_id)
+        .unwrap();
+    tab.handle_mouse_event(&MouseEvent::new_left_release_event(position), client_id)
+        .unwrap();
+    tab.handle_mouse_event(&MouseEvent::new_left_press_event(position), client_id)
+        .unwrap();
+    tab.handle_mouse_event(&MouseEvent::new_left_release_event(position), client_id)
+        .unwrap();
+
+    let selected_text = tab
+        .get_active_pane(client_id)
+        .unwrap()
+        .get_selected_text(client_id);
+    assert_eq!(selected_text, Some("bar".to_owned()));
 }
 
 #[test]
@@ -11250,6 +11708,7 @@ fn test_ctrl_drag_resizes_floating_pane_from_edge() {
         height: Some(PercentOrFixed::Fixed(10)),
         pinned: None,
         borderless: Some(false),
+        border_style: None,
     };
 
     tab.toggle_floating_panes(Some(client_id), None, None)
@@ -11331,6 +11790,7 @@ fn test_ctrl_drag_resizes_floating_pane_from_corner() {
         height: Some(PercentOrFixed::Fixed(10)),
         pinned: None,
         borderless: Some(false),
+        border_style: None,
     };
 
     tab.toggle_floating_panes(Some(client_id), None, None)
@@ -11412,6 +11872,7 @@ fn test_ctrl_drag_resizes_pinned_floating_pane_when_floating_panes_not_shown() {
         height: Some(PercentOrFixed::Fixed(10)),
         pinned: Some(true),
         borderless: Some(false),
+        border_style: None,
     };
 
     tab.new_pane(
@@ -11675,6 +12136,7 @@ fn test_left_click_on_floating_pane_changes_focus() {
         height: Some(PercentOrFixed::Fixed(10)),
         pinned: None,
         borderless: Some(false),
+        border_style: None,
     };
 
     let coordinates_2 = FloatingPaneCoordinates {
@@ -11684,6 +12146,7 @@ fn test_left_click_on_floating_pane_changes_focus() {
         height: Some(PercentOrFixed::Fixed(10)),
         pinned: None,
         borderless: Some(false),
+        border_style: None,
     };
 
     tab.toggle_floating_panes(Some(client_id), None, None)
@@ -11746,6 +12209,7 @@ fn test_left_click_on_pinned_floating_pane() {
         height: Some(PercentOrFixed::Fixed(10)),
         pinned: None,
         borderless: Some(false),
+        border_style: None,
     };
 
     let coordinates_2 = FloatingPaneCoordinates {
@@ -11755,6 +12219,7 @@ fn test_left_click_on_pinned_floating_pane() {
         height: Some(PercentOrFixed::Fixed(10)),
         pinned: None,
         borderless: Some(false),
+        border_style: None,
     };
 
     tab.toggle_floating_panes(Some(client_id), None, None)
@@ -11946,6 +12411,269 @@ fn test_right_alt_click_ungroups_panes() {
 }
 
 #[test]
+fn alt_click_is_forwarded_to_a_pane_the_client_is_descended_into() {
+    let size = Size {
+        cols: 121,
+        rows: 20,
+    };
+    let client_id = 1;
+
+    let mut pty_instruction_bus = MockPtyInstructionBus::new();
+    let mut tab = create_new_tab_with_mock_pty_writer(
+        size,
+        ModeInfo::default(),
+        pty_instruction_bus.pty_write_sender(),
+    );
+    pty_instruction_bus.start();
+
+    tab.handle_pty_bytes(1, Vec::from("\u{1b}[?1002h\u{1b}[?1006h".as_bytes()))
+        .unwrap();
+
+    let effect = tab
+        .handle_mouse_event_with_passthrough(
+            &MouseEvent::new_left_press_with_alt_event(Position::new(5, 71)),
+            client_id,
+            Some(PaneId::Terminal(1)),
+            zellij_utils::input::config_settings::default_config()
+                .mousebinds
+                .clone(),
+        )
+        .unwrap();
+
+    pty_instruction_bus.exit();
+
+    assert_eq!(
+        pty_instruction_bus.clone_output(),
+        vec!["\u{1b}[<8;71;5M".to_string()],
+        "the alt bit must survive into the SGR report written to the descended pane"
+    );
+    assert!(
+        effect.group_toggle.is_none(),
+        "an alt click inside a descended pane must not toggle a host pane group"
+    );
+    assert!(
+        effect.group_add.is_none(),
+        "an alt click inside a descended pane must not add to a host pane group"
+    );
+    assert!(
+        !effect.ungroup,
+        "an alt click inside a descended pane must not ungroup host panes"
+    );
+}
+
+#[test]
+fn alt_click_still_groups_a_mouse_tracking_pane_the_client_is_not_descended_into() {
+    let size = Size {
+        cols: 121,
+        rows: 20,
+    };
+    let client_id = 1;
+
+    let mut pty_instruction_bus = MockPtyInstructionBus::new();
+    let mut tab = create_new_tab_with_mock_pty_writer(
+        size,
+        ModeInfo::default(),
+        pty_instruction_bus.pty_write_sender(),
+    );
+    pty_instruction_bus.start();
+
+    tab.handle_pty_bytes(1, Vec::from("\u{1b}[?1002h\u{1b}[?1006h".as_bytes()))
+        .unwrap();
+
+    let effect = tab
+        .handle_mouse_event_with_passthrough(
+            &MouseEvent::new_left_press_with_alt_event(Position::new(5, 71)),
+            client_id,
+            None,
+            zellij_utils::input::config_settings::default_config()
+                .mousebinds
+                .clone(),
+        )
+        .unwrap();
+
+    pty_instruction_bus.exit();
+
+    assert_eq!(
+        effect.group_toggle,
+        Some(PaneId::Terminal(1)),
+        "without a descend, alt click keeps grouping panes even when the pane tracks the mouse"
+    );
+    assert!(
+        pty_instruction_bus.clone_output().is_empty(),
+        "without a descend, nothing should be written to the pane"
+    );
+}
+
+#[test]
+fn alt_wheel_up_is_forwarded_to_a_pane_the_client_is_descended_into() {
+    let size = Size {
+        cols: 121,
+        rows: 20,
+    };
+    let client_id = 1;
+
+    let mut pty_instruction_bus = MockPtyInstructionBus::new();
+    let mut tab = create_new_tab_with_mock_pty_writer(
+        size,
+        ModeInfo::default(),
+        pty_instruction_bus.pty_write_sender(),
+    );
+    pty_instruction_bus.start();
+
+    tab.handle_pty_bytes(1, Vec::from("\u{1b}[?1002h\u{1b}[?1006h".as_bytes()))
+        .unwrap();
+
+    tab.handle_mouse_event_with_passthrough(
+        &MouseEvent::new_alt_scroll_up_event(Position::new(5, 71)),
+        client_id,
+        Some(PaneId::Terminal(1)),
+        zellij_utils::input::config_settings::default_config()
+            .mousebinds
+            .clone(),
+    )
+    .unwrap();
+
+    pty_instruction_bus.exit();
+
+    assert_eq!(
+        pty_instruction_bus.clone_output(),
+        vec!["\u{1b}[<72;71;5M".to_string()],
+        "alt wheel over a descended pane must reach the guest instead of jumping prompts"
+    );
+}
+
+#[test]
+fn alt_wheel_over_a_mouse_tracking_pane_is_forwarded_instead_of_jumping_prompts() {
+    let size = Size {
+        cols: 121,
+        rows: 20,
+    };
+    let client_id = 1;
+
+    let mut pty_instruction_bus = MockPtyInstructionBus::new();
+    let mut tab = create_new_tab_with_mock_pty_writer(
+        size,
+        ModeInfo::default(),
+        pty_instruction_bus.pty_write_sender(),
+    );
+    pty_instruction_bus.start();
+
+    tab.handle_pty_bytes(1, Vec::from("\u{1b}[?1002h\u{1b}[?1006h".as_bytes()))
+        .unwrap();
+    let mut content = String::new();
+    for i in 0..20 {
+        content.push_str(&format!(
+            "\u{1b}]133;A\u{7}$ \u{1b}]133;B\u{7}cmd{i}\u{1b}]133;C\u{7}\r\nout{i}\u{1b}]133;D;0\u{7}\r\n"
+        ));
+    }
+    tab.handle_pty_bytes(1, Vec::from(content.as_bytes()))
+        .unwrap();
+
+    tab.handle_mouse_event_with_passthrough(
+        &MouseEvent::new_alt_scroll_up_event(Position::new(5, 71)),
+        client_id,
+        None,
+        zellij_utils::input::config_settings::default_config()
+            .mousebinds
+            .clone(),
+    )
+    .unwrap();
+
+    pty_instruction_bus.exit();
+
+    assert_eq!(
+        pty_instruction_bus.clone_output(),
+        vec!["\u{1b}[<72;71;5M".to_string()],
+        "a pane that tracks the mouse receives alt wheel just like a plain wheel"
+    );
+    assert!(
+        !tab.get_pane_with_id(PaneId::Terminal(1))
+            .map(|pane| pane.is_scrolled())
+            .unwrap_or(false),
+        "a forwarded alt wheel must not also scroll the host pane"
+    );
+}
+
+#[test]
+fn alt_wheel_jumps_between_prompts_of_the_pane_below_the_cursor() {
+    let size = Size {
+        cols: 121,
+        rows: 20,
+    };
+    let client_id = 1;
+    let mut tab = create_new_tab(size, ModeInfo::default());
+
+    let mut content = String::new();
+    for i in 0..20 {
+        content.push_str(&format!(
+            "\u{1b}]133;A\u{7}$ \u{1b}]133;B\u{7}cmd{i}\u{1b}]133;C\u{7}\r\nout{i}\u{1b}]133;D;0\u{7}\r\n"
+        ));
+    }
+    tab.handle_pty_bytes(1, Vec::from(content.as_bytes()))
+        .unwrap();
+
+    let pane_is_scrolled = |tab: &Tab| {
+        tab.get_pane_with_id(PaneId::Terminal(1))
+            .map(|pane| pane.is_scrolled())
+            .unwrap_or(false)
+    };
+    assert!(!pane_is_scrolled(&tab));
+
+    tab.handle_mouse_event(
+        &MouseEvent::new_alt_scroll_up_event(Position::new(10, 60)),
+        client_id,
+    )
+    .unwrap();
+    assert!(
+        pane_is_scrolled(&tab),
+        "alt wheel up must jump to the previous prompt"
+    );
+
+    tab.handle_mouse_event(
+        &MouseEvent::new_alt_scroll_down_event(Position::new(10, 60)),
+        client_id,
+    )
+    .unwrap();
+    assert!(
+        !pane_is_scrolled(&tab),
+        "alt wheel down must jump back towards the bottom of the buffer"
+    );
+}
+
+#[test]
+fn alt_wheel_is_swallowed_when_advanced_mouse_actions_are_disabled() {
+    let size = Size {
+        cols: 121,
+        rows: 20,
+    };
+    let client_id = 1;
+    let mut tab = create_new_tab(size, ModeInfo::default());
+    tab.update_advanced_mouse_actions(false);
+
+    let mut content = String::new();
+    for i in 0..20 {
+        content.push_str(&format!(
+            "\u{1b}]133;A\u{7}$ \u{1b}]133;B\u{7}cmd{i}\u{1b}]133;C\u{7}\r\nout{i}\u{1b}]133;D;0\u{7}\r\n"
+        ));
+    }
+    tab.handle_pty_bytes(1, Vec::from(content.as_bytes()))
+        .unwrap();
+
+    tab.handle_mouse_event(
+        &MouseEvent::new_alt_scroll_up_event(Position::new(10, 60)),
+        client_id,
+    )
+    .unwrap();
+
+    assert!(
+        !tab.get_pane_with_id(PaneId::Terminal(1))
+            .map(|pane| pane.is_scrolled())
+            .unwrap_or(false),
+        "alt wheel must be swallowed when advanced mouse actions are disabled"
+    );
+}
+
+#[test]
 fn test_scroll_wheel_up_scrolls_pane() {
     let size = Size {
         cols: 121,
@@ -12129,19 +12857,17 @@ fn test_scroll_on_inactive_pane_scrolls_that_pane() {
 }
 
 #[test]
-fn test_right_click_forwards_to_active_pane() {
+fn test_right_click_on_active_pane_without_mouse_reporting_opens_context_menu() {
     let size = Size {
         cols: 121,
         rows: 20,
     };
     let client_id = 1;
     let mut tab = create_new_tab(size, ModeInfo::default());
-    let _output = Output::default();
 
     tab.handle_pty_bytes(1, Vec::from("Active pane".as_bytes()))
         .unwrap();
 
-    // Right click on the active pane
     let effect = tab
         .handle_mouse_event(
             &MouseEvent::new_right_press_event(Position::new(10, 60)),
@@ -12149,9 +12875,475 @@ fn test_right_click_forwards_to_active_pane() {
         )
         .unwrap();
 
-    // Event should be forwarded (verified via MouseEffect or no error)
-    // The effect may not indicate state change, but should succeed
-    assert!(effect.group_toggle.is_none());
+    let request = effect.open_context_menu.expect("context menu request");
+    assert_eq!(request.pane_id, PaneId::Terminal(1));
+    assert_eq!(request.kind, zellij_utils::data::ContextMenuKind::Pane);
+    assert_eq!(request.position, Position::new(10, 60));
+    assert!(tab.selecting_with_mouse_in_pane.is_none());
+}
+
+#[test]
+fn test_right_click_on_active_pane_with_mouse_reporting_is_forwarded() {
+    let size = Size {
+        cols: 121,
+        rows: 20,
+    };
+    let client_id = 1;
+
+    let mut pty_instruction_bus = MockPtyInstructionBus::new();
+    let mut tab = create_new_tab_with_mock_pty_writer(
+        size,
+        ModeInfo::default(),
+        pty_instruction_bus.pty_write_sender(),
+    );
+    pty_instruction_bus.start();
+
+    tab.handle_pty_bytes(1, Vec::from("\u{1b}[?1002h\u{1b}[?1006h".as_bytes()))
+        .unwrap();
+
+    let effect = tab
+        .handle_mouse_event(
+            &MouseEvent::new_right_press_event(Position::new(5, 71)),
+            client_id,
+        )
+        .unwrap();
+
+    pty_instruction_bus.exit();
+
+    assert_eq!(
+        pty_instruction_bus.clone_output(),
+        vec!["\u{1b}[<2;71;5M".to_string()],
+    );
+    assert!(effect.open_context_menu.is_none());
+}
+
+#[test]
+fn test_right_click_on_unfocused_pane_opens_menu_without_changing_focus() {
+    let size = Size {
+        cols: 121,
+        rows: 20,
+    };
+    let client_id = 1;
+    let mut tab = create_new_tab(size, ModeInfo::default());
+    tab.vertical_split(PaneId::Terminal(2), None, client_id, None, None)
+        .unwrap();
+    assert_eq!(tab.get_active_pane_id(client_id), Some(PaneId::Terminal(2)));
+
+    let effect = tab
+        .handle_mouse_event(
+            &MouseEvent::new_right_press_event(Position::new(5, 30)),
+            client_id,
+        )
+        .unwrap();
+
+    let request = effect.open_context_menu.expect("context menu request");
+    assert_eq!(request.pane_id, PaneId::Terminal(1));
+    assert_eq!(tab.get_active_pane_id(client_id), Some(PaneId::Terminal(2)));
+}
+
+fn tab_with_floating_pane(size: Size, client_id: ClientId) -> Tab {
+    let mut tab = create_new_tab(size, ModeInfo::default());
+    tab.toggle_floating_panes(Some(client_id), None, None)
+        .unwrap();
+    tab.new_pane(
+        PaneId::Terminal(2),
+        None,
+        None,
+        false,
+        true,
+        NewPanePlacement::default(),
+        Some(client_id),
+        None,
+    )
+    .unwrap();
+    let mut output = Output::default();
+    tab.render(&mut output, None).unwrap();
+    tab
+}
+
+fn pin_button_position(tab: &Tab, pane_id: PaneId) -> Position {
+    let geom = tab.get_pane_with_id(pane_id).unwrap().current_geom();
+    Position::new(geom.y as i32, (geom.x + geom.cols.as_usize() - 4) as u16)
+}
+
+#[test]
+fn test_right_click_on_pin_button_does_not_toggle_pin() {
+    let size = Size {
+        cols: 121,
+        rows: 20,
+    };
+    let client_id = 1;
+    let mut tab = tab_with_floating_pane(size, client_id);
+    let pin_position = pin_button_position(&tab, PaneId::Terminal(2));
+
+    let effect = tab
+        .handle_mouse_event(&MouseEvent::new_right_press_event(pin_position), client_id)
+        .unwrap();
+    tab.handle_mouse_event(
+        &MouseEvent::new_right_release_event(pin_position),
+        client_id,
+    )
+    .unwrap();
+
+    assert!(!tab.floating_panes.has_pinned_panes());
+    let request = effect.open_context_menu.expect("context menu request");
+    assert_eq!(request.kind, zellij_utils::data::ContextMenuKind::PaneFrame);
+    assert!(request.is_floating);
+    assert!(!tab.floating_panes.pane_is_being_moved_with_mouse());
+}
+
+#[test]
+fn test_left_click_on_pin_button_still_toggles_pin() {
+    let size = Size {
+        cols: 121,
+        rows: 20,
+    };
+    let client_id = 1;
+    let mut tab = tab_with_floating_pane(size, client_id);
+    let pin_position = pin_button_position(&tab, PaneId::Terminal(2));
+
+    tab.handle_mouse_event(&MouseEvent::new_left_press_event(pin_position), client_id)
+        .unwrap();
+
+    assert!(tab.floating_panes.has_pinned_panes());
+}
+
+fn open_test_popup(tab: &mut Tab, client_id: ClientId, plugin_id: u32) {
+    let (plugin_sender, _plugin_receiver) = channels::unbounded();
+    tab.senders
+        .replace_to_plugin(SenderWithContext::new(plugin_sender));
+    tab.open_popup(
+        client_id,
+        plugin_id,
+        crate::tab::PopupPlacement::At(Position::new(3, 3)),
+        crate::tab::PopupKind::Menu,
+        20,
+        6,
+        None,
+        String::from("popup"),
+    )
+    .unwrap();
+}
+
+fn open_test_prompt_popup(tab: &mut Tab, client_id: ClientId, plugin_id: u32, line: i32) {
+    tab.open_popup(
+        client_id,
+        plugin_id,
+        crate::tab::PopupPlacement::At(Position::new(line, 3)),
+        crate::tab::PopupKind::Prompt,
+        20,
+        4,
+        None,
+        String::from("prompt"),
+    )
+    .unwrap();
+}
+
+#[test]
+fn popup_is_left_out_of_pane_lists_and_floating_state() {
+    let size = Size {
+        cols: 121,
+        rows: 20,
+    };
+    let client_id = 1;
+    let mut tab = create_new_tab(size, ModeInfo::default());
+    let pane_ids_before = tab.get_all_pane_ids();
+    let pane_infos_before = tab.pane_infos().len();
+    let floating_visible_before = tab.are_floating_panes_visible();
+
+    open_test_popup(&mut tab, client_id, 42);
+
+    assert!(tab.has_popup_for_client(client_id));
+    assert!(tab.has_plugin(42));
+    assert_eq!(tab.get_all_pane_ids(), pane_ids_before);
+    assert_eq!(tab.pane_infos().len(), pane_infos_before);
+    assert!(tab
+        .pane_infos()
+        .iter()
+        .all(|pane_info| !(pane_info.is_plugin && pane_info.id == 42)));
+    assert_eq!(tab.are_floating_panes_visible(), floating_visible_before);
+    assert_eq!(tab.get_selectable_floating_panes_count(), 0);
+    assert_eq!(tab.get_floating_panes().count(), 0);
+    assert!(!tab.get_plugin_ids().contains(&42));
+    assert_eq!(tab.get_active_pane_id(client_id), Some(PaneId::Terminal(1)));
+}
+
+#[test]
+fn popup_keeps_hidden_floating_panes_hidden_and_visible_ones_visible() {
+    let size = Size {
+        cols: 121,
+        rows: 20,
+    };
+    let client_id = 1;
+    let mut tab = tab_with_floating_pane(size, client_id);
+    assert!(tab.are_floating_panes_visible());
+    open_test_popup(&mut tab, client_id, 42);
+    assert!(tab.are_floating_panes_visible());
+    tab.close_popup(client_id);
+
+    tab.toggle_floating_panes(Some(client_id), None, None)
+        .unwrap();
+    assert!(!tab.are_floating_panes_visible());
+    open_test_popup(&mut tab, client_id, 43);
+    assert!(!tab.are_floating_panes_visible());
+}
+
+#[test]
+fn popup_is_drawn_only_for_the_client_that_opened_it() {
+    let size = Size {
+        cols: 121,
+        rows: 20,
+    };
+    let client_id = 1;
+    let other_client_id = 2;
+    let mut tab = create_new_tab(size, ModeInfo::default());
+    tab.add_client(other_client_id, None).unwrap();
+    open_test_popup(&mut tab, client_id, 42);
+    tab.handle_plugin_bytes(42, client_id, Vec::from("POPUP-CONTENT".as_bytes()))
+        .unwrap();
+
+    let mut output = Output::default();
+    tab.render(&mut output, None).unwrap();
+    let serialized = output.serialize().unwrap();
+    let owner_snapshot = take_snapshot(
+        serialized.get(&client_id).unwrap(),
+        size.rows,
+        size.cols,
+        Palette::default(),
+    );
+    let other_snapshot = take_snapshot(
+        serialized.get(&other_client_id).unwrap(),
+        size.rows,
+        size.cols,
+        Palette::default(),
+    );
+    assert!(owner_snapshot.contains("POPUP-CONTENT"));
+    assert!(!other_snapshot.contains("POPUP-CONTENT"));
+}
+
+#[test]
+fn popup_is_placed_inside_the_screen_and_resized_on_request() {
+    let size = Size {
+        cols: 121,
+        rows: 20,
+    };
+    let client_id = 1;
+    let mut tab = create_new_tab(size, ModeInfo::default());
+    let (plugin_sender, _plugin_receiver) = channels::unbounded();
+    tab.senders
+        .replace_to_plugin(SenderWithContext::new(plugin_sender));
+    tab.open_popup(
+        client_id,
+        42,
+        crate::tab::PopupPlacement::At(Position::new(18, 115)),
+        crate::tab::PopupKind::Menu,
+        20,
+        6,
+        None,
+        String::from("popup"),
+    )
+    .unwrap();
+    let geom = tab.popup_geom(client_id).unwrap();
+    assert_eq!((geom.x, geom.y), (101, 14));
+    assert_eq!((geom.cols.as_usize(), geom.rows.as_usize()), (20, 6));
+
+    tab.resize_popup(42, 30, 4);
+    let geom = tab.popup_geom(client_id).unwrap();
+    assert_eq!((geom.x, geom.y), (91, 16));
+    assert_eq!((geom.cols.as_usize(), geom.rows.as_usize()), (30, 4));
+}
+
+#[test]
+fn click_outside_popup_requests_close_and_click_inside_is_consumed() {
+    let size = Size {
+        cols: 121,
+        rows: 20,
+    };
+    let client_id = 1;
+    let mut tab = create_new_tab(size, ModeInfo::default());
+    open_test_popup(&mut tab, client_id, 42);
+
+    assert_eq!(
+        tab.handle_popup_mouse_event(
+            &MouseEvent::new_left_press_event(Position::new(4, 5)),
+            client_id
+        ),
+        Some(crate::tab::PopupMouseOutcome::Consumed)
+    );
+    assert_eq!(
+        tab.handle_popup_mouse_event(
+            &MouseEvent::new_left_press_event(Position::new(15, 80)),
+            client_id
+        ),
+        Some(crate::tab::PopupMouseOutcome::CloseRequested)
+    );
+    assert_eq!(
+        tab.handle_popup_mouse_event(&MouseEvent::new_left_press_event(Position::new(15, 80)), 2),
+        None
+    );
+}
+
+#[test]
+fn stacked_prompt_popups_hand_keys_back_from_the_newest_to_the_pane() {
+    let size = Size {
+        cols: 121,
+        rows: 20,
+    };
+    let client_id = 1;
+    let mut tab = create_new_tab(size, ModeInfo::default());
+    let (plugin_sender, _plugin_receiver) = channels::unbounded();
+    tab.senders
+        .replace_to_plugin(SenderWithContext::new(plugin_sender));
+    open_test_prompt_popup(&mut tab, client_id, 42, 2);
+    open_test_prompt_popup(&mut tab, client_id, 43, 8);
+    assert_eq!(tab.popup_count_for_client(client_id), 2);
+    assert_eq!(tab.popup_plugin_id(client_id), Some(43));
+
+    assert_eq!(tab.close_popup_with_plugin_id(43), Some(client_id));
+    assert_eq!(tab.popup_plugin_id(client_id), Some(42));
+    assert!(tab.has_popup_for_client(client_id));
+
+    assert_eq!(tab.close_popup_with_plugin_id(42), Some(client_id));
+    assert_eq!(tab.popup_plugin_id(client_id), None);
+    assert!(!tab.has_popup_for_client(client_id));
+    assert_eq!(tab.get_active_pane_id(client_id), Some(PaneId::Terminal(1)));
+}
+
+#[test]
+fn closing_a_lower_prompt_popup_keeps_the_newest_on_top() {
+    let size = Size {
+        cols: 121,
+        rows: 20,
+    };
+    let client_id = 1;
+    let mut tab = create_new_tab(size, ModeInfo::default());
+    let (plugin_sender, _plugin_receiver) = channels::unbounded();
+    tab.senders
+        .replace_to_plugin(SenderWithContext::new(plugin_sender));
+    open_test_prompt_popup(&mut tab, client_id, 42, 2);
+    open_test_prompt_popup(&mut tab, client_id, 43, 8);
+    tab.close_popup_with_plugin_id(42);
+    assert_eq!(tab.popup_plugin_id(client_id), Some(43));
+    assert_eq!(tab.popup_count_for_client(client_id), 1);
+}
+
+#[test]
+fn a_menu_popup_replaces_only_menus_and_never_a_prompt() {
+    let size = Size {
+        cols: 121,
+        rows: 20,
+    };
+    let client_id = 1;
+    let mut tab = create_new_tab(size, ModeInfo::default());
+    open_test_popup(&mut tab, client_id, 41);
+    open_test_prompt_popup(&mut tab, client_id, 42, 2);
+    let (plugin_sender, _plugin_receiver) = channels::unbounded();
+    tab.senders
+        .replace_to_plugin(SenderWithContext::new(plugin_sender));
+    let replaced = tab
+        .open_popup(
+            client_id,
+            44,
+            crate::tab::PopupPlacement::At(Position::new(3, 3)),
+            crate::tab::PopupKind::Menu,
+            20,
+            6,
+            None,
+            String::from("popup"),
+        )
+        .unwrap();
+    assert_eq!(replaced, vec![41]);
+    assert_eq!(tab.popup_count_for_client(client_id), 2);
+    assert_eq!(tab.popup_plugin_id(client_id), Some(44));
+    assert_eq!(tab.close_top_popup(client_id), Some(44));
+    assert_eq!(tab.popup_plugin_id(client_id), Some(42));
+}
+
+#[test]
+fn click_outside_a_prompt_popup_is_ignored() {
+    let size = Size {
+        cols: 121,
+        rows: 20,
+    };
+    let client_id = 1;
+    let mut tab = create_new_tab(size, ModeInfo::default());
+    let (plugin_sender, _plugin_receiver) = channels::unbounded();
+    tab.senders
+        .replace_to_plugin(SenderWithContext::new(plugin_sender));
+    open_test_prompt_popup(&mut tab, client_id, 42, 2);
+    assert_eq!(
+        tab.handle_popup_mouse_event(
+            &MouseEvent::new_left_press_event(Position::new(15, 80)),
+            client_id
+        ),
+        Some(crate::tab::PopupMouseOutcome::Consumed)
+    );
+    assert!(tab.has_popup_for_client(client_id));
+}
+
+#[test]
+fn prompt_popup_centered_in_a_pane_stays_centered_when_resized() {
+    let size = Size {
+        cols: 121,
+        rows: 20,
+    };
+    let client_id = 1;
+    let mut tab = create_new_tab(size, ModeInfo::default());
+    let (plugin_sender, _plugin_receiver) = channels::unbounded();
+    tab.senders
+        .replace_to_plugin(SenderWithContext::new(plugin_sender));
+    let area = zellij_utils::pane_size::Viewport {
+        x: 60,
+        y: 1,
+        rows: 18,
+        cols: 60,
+    };
+    tab.open_popup(
+        client_id,
+        42,
+        crate::tab::PopupPlacement::CenteredIn(area),
+        crate::tab::PopupKind::Prompt,
+        20,
+        6,
+        None,
+        String::from("prompt"),
+    )
+    .unwrap();
+    let geom = tab.popup_geom(client_id).unwrap();
+    assert_eq!((geom.x, geom.y), (80, 7));
+    tab.resize_popup(42, 40, 10);
+    let geom = tab.popup_geom(client_id).unwrap();
+    assert_eq!((geom.x, geom.y), (70, 5));
+}
+
+#[test]
+fn stacked_popups_hide_the_lower_popup_where_they_overlap() {
+    let size = Size {
+        cols: 121,
+        rows: 20,
+    };
+    let client_id = 1;
+    let mut tab = create_new_tab(size, ModeInfo::default());
+    let (plugin_sender, _plugin_receiver) = channels::unbounded();
+    tab.senders
+        .replace_to_plugin(SenderWithContext::new(plugin_sender));
+    open_test_prompt_popup(&mut tab, client_id, 42, 2);
+    open_test_prompt_popup(&mut tab, client_id, 43, 2);
+    tab.handle_plugin_bytes(42, client_id, Vec::from("LOWER-POPUP".as_bytes()))
+        .unwrap();
+    tab.handle_plugin_bytes(43, client_id, Vec::from("UPPER-POPUP".as_bytes()))
+        .unwrap();
+    let mut output = Output::default();
+    tab.render(&mut output, None).unwrap();
+    let serialized = output.serialize().unwrap();
+    let snapshot = take_snapshot(
+        serialized.get(&client_id).unwrap(),
+        size.rows,
+        size.cols,
+        Palette::default(),
+    );
+    assert!(snapshot.contains("UPPER-POPUP"));
+    assert!(!snapshot.contains("LOWER-POPUP"));
 }
 
 #[test]
@@ -12833,6 +14025,7 @@ fn test_ctrl_scroll_up_increases_pinned_floating_pane_size_when_floating_panes_h
         height: Some(PercentOrFixed::Fixed(10)),
         pinned: Some(true),
         borderless: Some(false),
+        border_style: None,
     };
 
     tab.new_pane(
@@ -12901,6 +14094,7 @@ fn test_ctrl_scroll_down_decreases_pinned_floating_pane_size_when_floating_panes
         height: Some(PercentOrFixed::Fixed(10)),
         pinned: Some(true),
         borderless: Some(false),
+        border_style: None,
     };
 
     tab.new_pane(
@@ -13173,6 +14367,7 @@ fn adding_stacked_pane_in_stack_list_mode_moves_existing_pane_to_suppressed_imme
         NewPanePlacement::Stacked {
             pane_id_to_stack_under: None,
             borderless: None,
+            border_style: None,
         },
         Some(client_id),
         None,
@@ -13284,6 +14479,101 @@ fn resize_hint_text_tracks_mouse_scroll_resize_updates() {
 }
 
 #[test]
+fn hint_text_suppressed_when_mouse_hover_tips_disabled() {
+    let size = Size {
+        cols: 120,
+        rows: 20,
+    };
+    let client_id = 1;
+    let mut tab = create_new_tab(size, ModeInfo::default());
+
+    tab.vertical_split(PaneId::Terminal(2), None, client_id, None, None)
+        .unwrap();
+    tab.mouse_help_text_visible.insert(client_id, true);
+
+    let enabled_resize_hints = tab.resolve_hint_text(client_id);
+    assert!(!enabled_resize_hints.is_empty());
+    assert!(enabled_resize_hints
+        .values()
+        .all(|hint| hint.text.contains("drag borders")));
+
+    tab.update_mouse_hover_tips(false);
+    assert!(tab.resolve_hint_text(client_id).is_empty());
+
+    tab.mouse_hover_pane_id
+        .insert(client_id, PaneId::Terminal(1));
+    assert!(tab.resolve_hint_text(client_id).is_empty());
+
+    tab.update_mouse_hover_tips(true);
+    let hover_hints = tab.resolve_hint_text(client_id);
+    assert!(!hover_hints.is_empty());
+    assert!(hover_hints.values().all(|hint| hint.text.contains("group")));
+
+    tab.update_mouse_hover_tips(false);
+    assert!(tab.resolve_hint_text(client_id).is_empty());
+
+    tab.hold_pane(PaneId::Terminal(2), Some(0), false, RunCommand::default());
+    let held_hints = tab.resolve_hint_text(client_id);
+    assert!(!held_hints.is_empty());
+    assert!(held_hints.values().all(|hint| hint.text.contains("re-run")));
+}
+
+#[test]
+fn plugin_hover_tooltip_still_renders_when_mouse_hover_tips_disabled() {
+    let size = Size {
+        cols: 121,
+        rows: 20,
+    };
+    let client_id = 1;
+    let mut tab = create_new_tab(size, ModeInfo::default());
+    let mut output = Output::default();
+
+    tab.update_mouse_hover_tips(false);
+
+    tab.handle_pty_bytes(1, Vec::from("hover here tooltipped bar\n".as_bytes()))
+        .unwrap();
+
+    let highlights = vec![RegexHighlight {
+        pattern: "tooltipped".into(),
+        style: HighlightStyle::None,
+        layer: HighlightLayer::Tool,
+        context: BTreeMap::new(),
+        on_hover: true,
+        bold: false,
+        italic: true,
+        underline: true,
+        tooltip_text: Some("Tool Tooltip".to_string()),
+    }];
+    tab.set_plugin_regex_highlights_for_pane(
+        PaneId::Terminal(1),
+        20,
+        highlights,
+        &Style::default(),
+    );
+
+    let hover_position = Position::new(1, 12);
+    let _effect = tab
+        .handle_mouse_event(
+            &MouseEvent::new_buttonless_motion(hover_position),
+            client_id,
+        )
+        .unwrap();
+
+    tab.render(&mut output, None).unwrap();
+    let snapshot = take_snapshot(
+        output.serialize().unwrap().get(&client_id).unwrap(),
+        size.rows,
+        size.cols,
+        Palette::default(),
+    );
+    assert!(
+        snapshot.contains("Tool Tooltip"),
+        "the plugin hover tooltip must survive mouse_hover_tips false:\n{}",
+        snapshot
+    );
+}
+
+#[test]
 fn in_place_pane_with_close_replaced_pane_false_restores_original() {
     // When an in-place pane is closed and close_replaced_pane=false (the default),
     // the pane that was replaced is restored to its original position.
@@ -13305,6 +14595,7 @@ fn in_place_pane_with_close_replaced_pane_false_restores_original() {
         NewPanePlacement::Tiled {
             direction: None,
             borderless: None,
+            border_style: None,
         },
         Some(client_id),
         None,
@@ -13368,6 +14659,7 @@ fn in_place_pane_with_close_replaced_pane_true_closes_original() {
         NewPanePlacement::Tiled {
             direction: None,
             borderless: None,
+            border_style: None,
         },
         Some(client_id),
         None,
@@ -13473,6 +14765,7 @@ fn create_new_tab_with_plugin_receiver(
         draw_pane_frames,
         auto_layout,
         connected_clients,
+        Rc::new(RefCell::new(HashMap::new())),
         session_is_mirrored,
         Some(client_id),
         copy_options,
@@ -13492,12 +14785,12 @@ fn create_new_tab_with_plugin_receiver(
         currently_marking_pane_group,
         advanced_mouse_actions,
         mouse_scroll_resize,
-        true,  // mouse_hover_effects
+        true, // mouse_hover_effects
+        true,
         false, // focus_follows_mouse
         false, // mouse_click_through
         web_server_ip,
         web_server_port,
-        0, // mobile_tab_count
     );
     tab.apply_layout(
         TiledPaneLayout::default(),
@@ -14432,6 +15725,7 @@ fn focus_follows_mouse_focuses_floating_pane_on_hover() {
         height: Some(PercentOrFixed::Fixed(10)),
         pinned: None,
         borderless: Some(false),
+        border_style: None,
     };
 
     let coordinates_2 = FloatingPaneCoordinates {
@@ -14441,6 +15735,7 @@ fn focus_follows_mouse_focuses_floating_pane_on_hover() {
         height: Some(PercentOrFixed::Fixed(10)),
         pinned: None,
         borderless: Some(false),
+        border_style: None,
     };
 
     tab.toggle_floating_panes(Some(client_id), None, None)
@@ -14656,6 +15951,7 @@ fn focus_follows_mouse_ignores_tiled_pane_when_floating_visible() {
             height: Some(PercentOrFixed::Fixed(10)),
             pinned: None,
             borderless: Some(false),
+            border_style: None,
         })),
         Some(client_id),
         None,
@@ -14706,6 +16002,7 @@ fn focus_follows_mouse_focuses_floating_pane_when_floating_visible() {
             height: Some(PercentOrFixed::Fixed(10)),
             pinned: None,
             borderless: Some(false),
+            border_style: None,
         })),
         Some(client_id),
         None,
@@ -14724,6 +16021,7 @@ fn focus_follows_mouse_focuses_floating_pane_when_floating_visible() {
             height: Some(PercentOrFixed::Fixed(10)),
             pinned: None,
             borderless: Some(false),
+            border_style: None,
         })),
         Some(client_id),
         None,
@@ -15212,23 +16510,20 @@ fn mouse_click_through_respects_live_toggle() {
 // OSC 99 Desktop Notification Integration Tests
 // ========================================================================
 
-/// Creates a Tab with a real `to_server` sender so that `ServerInstruction::Render`
-/// calls from `forward_desktop_notifications` can be captured on the receiver.
 fn create_new_tab_with_server_receiver(
     size: Size,
     default_mode: ModeInfo,
-) -> (Tab, Receiver<(ServerInstruction, ErrorContext)>) {
+) -> (Tab, Receiver<(ScreenInstruction, ErrorContext)>) {
     set_session_name("test".into());
     let index = 0;
     let position = 0;
     let name = String::new();
     let os_api = Box::new(FakeInputOutput::default());
 
-    // Set up real server channel to capture ServerInstruction::Render
-    let (server_sender, server_receiver) = channels::unbounded();
-    let server_sender = SenderWithContext::new(server_sender);
+    let (screen_sender, screen_receiver) = channels::unbounded();
+    let screen_sender = SenderWithContext::new(screen_sender);
     let mut senders = ThreadSenders::default().silently_fail_on_send();
-    senders.to_server = Some(server_sender);
+    senders.to_screen = Some(screen_sender);
 
     let max_panes = None;
     let client_id = 1;
@@ -15261,6 +16556,7 @@ fn create_new_tab_with_server_receiver(
         PaneFrameStyle::Full,
         true, // auto_layout
         connected_clients,
+        Rc::new(RefCell::new(HashMap::new())),
         true, // session_is_mirrored
         Some(client_id),
         copy_options,
@@ -15278,14 +16574,14 @@ fn create_new_tab_with_server_receiver(
         WebSharing::Off,
         current_group,
         currently_marking_pane_group,
-        true,  // advanced_mouse_actions
-        true,  // mouse_scroll_resize
-        true,  // mouse_hover_effects
+        true, // advanced_mouse_actions
+        true, // mouse_scroll_resize
+        true, // mouse_hover_effects
+        true,
         false, // focus_follows_mouse
         false, // mouse_click_through
         IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
         8080,
-        0, // mobile_tab_count
     );
     tab.apply_layout(
         TiledPaneLayout::default(),
@@ -15297,17 +16593,40 @@ fn create_new_tab_with_server_receiver(
         None,
     )
     .unwrap();
-    (tab, server_receiver)
+    (tab, screen_receiver)
 }
 
-/// Helper: collect all ServerInstruction::Render messages from the receiver,
-/// concatenate the per-client strings, and return the combined output.
-fn collect_render_output(receiver: &Receiver<(ServerInstruction, ErrorContext)>) -> String {
+fn collect_render_output(receiver: &Receiver<(ScreenInstruction, ErrorContext)>) -> String {
+    use crate::panes::grid::{namespace_notification_id, PendingNotification};
     let mut output = String::new();
     while let Ok((instruction, _)) = receiver.try_recv() {
-        if let ServerInstruction::Render(Some(client_map)) = instruction {
-            for (_client_id, content) in client_map {
-                output.push_str(&content);
+        if let ScreenInstruction::ForwardDesktopNotifications {
+            pane_id,
+            notifications,
+        } = instruction
+        {
+            for notification in notifications {
+                if let PendingNotification::Osc99 {
+                    payload,
+                    terminator,
+                    wants_report,
+                    ..
+                } = notification
+                {
+                    let (metadata, rest) = match payload.find(';') {
+                        Some(idx) => (
+                            payload.get(..idx).unwrap_or_default(),
+                            payload.get(idx..).unwrap_or_default(),
+                        ),
+                        None => (payload.as_str(), ""),
+                    };
+                    let namespaced_metadata =
+                        namespace_notification_id(metadata, pane_id, wants_report);
+                    output.push_str(&format!(
+                        "\u{1b}]99;{}{}{}",
+                        namespaced_metadata, rest, terminator
+                    ));
+                }
             }
         }
     }
@@ -15425,6 +16744,27 @@ fn osc99_multiple_notifications_forwarded() {
 }
 
 #[test]
+fn osc99_chunks_of_one_notification_share_an_identifier() {
+    let size = Size { cols: 80, rows: 24 };
+    let (mut tab, server_receiver) = create_new_tab_with_server_receiver(size, ModeInfo::default());
+
+    tab.handle_pty_bytes(
+        1,
+        Vec::from("\x1b]99;i=chunked:a=report:d=0;Hello\x07\x1b]99;i=chunked:p=body;World\x07"),
+    )
+    .unwrap();
+
+    let output = collect_render_output(&server_receiver);
+
+    assert_eq!(
+        output.matches("i=p1r.chunked").count(),
+        2,
+        "both chunks address the same notification, got: {:?}",
+        output
+    );
+}
+
+#[test]
 fn osc99_notification_mixed_with_regular_output() {
     // OSC 99 embedded in regular terminal output should be extracted and forwarded
     let size = Size { cols: 80, rows: 24 };
@@ -15530,7 +16870,11 @@ fn osc99_grid_parses_and_stores_notification() {
         "Should have one pending notification"
     );
 
-    let (ref payload, ref _terminator) = grid.pending_desktop_notifications.first().unwrap();
+    let notification = grid.pending_desktop_notifications.first().unwrap();
+    let payload = match notification {
+        crate::panes::grid::PendingNotification::Osc99 { payload, .. } => payload.clone(),
+        other => panic!("Expected an OSC 99 notification, got: {:?}", other),
+    };
     assert!(
         payload.contains("i=gridtest"),
         "Payload should contain i=gridtest, got: {:?}",
@@ -15549,7 +16893,7 @@ fn osc99_namespace_denormalize_roundtrip() {
     let pane_id: u32 = 42;
 
     // Namespace — a=report means 'r' flag is set
-    let namespaced = namespace_notification_id(original_metadata, pane_id);
+    let namespaced = namespace_notification_id(original_metadata, pane_id, true);
     assert!(
         namespaced.contains("i=p42r.mynotif"),
         "Should namespace to i=p42r.mynotif (a=report → 'r' flag), got: {:?}",
@@ -15557,19 +16901,22 @@ fn osc99_namespace_denormalize_roundtrip() {
     );
 
     // Simulate a response with the namespaced ID
-    let response_payload = format!("i=p42r.mynotif:p=close;activated");
+    let response_payload = format!("i=p42r.mynotif;activated");
     let result = denormalize_notification_response(response_payload.as_bytes());
     assert!(result.is_some(), "Should successfully denormalize");
 
-    let (terminal_id, app_wants_report, is_query, response_bytes) = result.unwrap();
-    assert_eq!(terminal_id, 42, "Should extract pane_id 42");
+    let response = result.unwrap();
+    assert_eq!(response.terminal_id, 42, "Should extract pane_id 42");
     assert!(
-        app_wants_report,
-        "'r' flag in i=p42r.mynotif means app_wants_report should be true"
+        response.forward_to_pane,
+        "'r' flag in i=p42r.mynotif means the response goes back to the app"
     );
-    assert!(!is_query, "No 'q' flag means is_query should be false");
+    assert!(
+        response.focus_pane,
+        "an activation report focuses the originating pane"
+    );
 
-    let response_str = String::from_utf8_lossy(&response_bytes);
+    let response_str = String::from_utf8_lossy(&response.bytes);
     assert!(
         response_str.contains("i=mynotif"),
         "Should restore original i=mynotif, got: {:?}",
@@ -15600,7 +16947,7 @@ fn osc99_namespace_without_identifier_adds_default() {
 
     // With a=report → 'r' flag
     let metadata = "p=title:a=report";
-    let namespaced = namespace_notification_id(metadata, 7);
+    let namespaced = namespace_notification_id(metadata, 7, true);
     assert!(
         namespaced.contains("i=p7r.:"),
         "Should add default i=p7r. when no i= present (a=report → 'r' flag), got: {:?}",
@@ -15609,7 +16956,7 @@ fn osc99_namespace_without_identifier_adds_default() {
 
     // Without a=report → no 'r' flag
     let metadata = "p=title";
-    let namespaced = namespace_notification_id(metadata, 7);
+    let namespaced = namespace_notification_id(metadata, 7, false);
     assert!(
         namespaced.contains("i=p7.:"),
         "Should add default i=p7. when no i= and no a=report, got: {:?}",
@@ -15618,11 +16965,41 @@ fn osc99_namespace_without_identifier_adds_default() {
 }
 
 #[test]
+fn osc99_namespace_does_not_leave_empty_metadata_entries() {
+    use crate::panes::grid::namespace_notification_id;
+
+    let namespaced = namespace_notification_id("", 1, false);
+    assert_eq!(
+        namespaced, "i=p1.:a=focus,report",
+        "an empty metadata section produces no empty key=value entries"
+    );
+}
+
+#[test]
+fn osc99_namespace_is_stable_across_the_escapes_of_one_notification() {
+    use crate::panes::grid::namespace_notification_id;
+
+    let notification = namespace_notification_id("i=myid:a=report", 4, true);
+    let close = namespace_notification_id("i=myid:p=close", 4, true);
+    assert!(
+        notification.contains("i=p4r.myid") && close.contains("i=p4r.myid"),
+        "a close request addresses the same identifier the notification got, got: {:?} and {:?}",
+        notification,
+        close
+    );
+    assert!(
+        !close.contains("a="),
+        "a close request is not turned into something the host reports on, got: {:?}",
+        close
+    );
+}
+
+#[test]
 fn osc99_namespace_ensures_report_action() {
     use crate::panes::grid::namespace_notification_id;
 
     // a=focus → a=focus,report
-    let result = namespace_notification_id("i=test:p=title:a=focus", 1);
+    let result = namespace_notification_id("i=test:p=title:a=focus", 1, false);
     assert!(
         result.contains("a=focus,report"),
         "a=focus should be augmented with report, got: {:?}",
@@ -15630,7 +17007,7 @@ fn osc99_namespace_ensures_report_action() {
     );
 
     // a=report → unchanged
-    let result = namespace_notification_id("i=test:p=title:a=report", 1);
+    let result = namespace_notification_id("i=test:p=title:a=report", 1, true);
     assert!(
         result.contains("a=report"),
         "a=report should be preserved, got: {:?}",
@@ -15643,18 +17020,17 @@ fn osc99_namespace_ensures_report_action() {
     );
 
     // a=focus,report → unchanged
-    let result = namespace_notification_id("i=test:p=title:a=focus,report", 1);
+    let result = namespace_notification_id("i=test:p=title:a=focus,report", 1, true);
     assert!(
         result.contains("a=focus,report"),
         "a=focus,report should be preserved, got: {:?}",
         result
     );
 
-    // No a= key → a=report added
-    let result = namespace_notification_id("i=test:p=title", 1);
+    let result = namespace_notification_id("i=test:p=title", 1, false);
     assert!(
-        result.contains("a=report"),
-        "Missing a= should get a=report appended, got: {:?}",
+        result.contains("a=focus,report"),
+        "Missing a= should keep the protocol's default focus action, got: {:?}",
         result
     );
 }
@@ -15664,21 +17040,21 @@ fn osc99_report_flag_roundtrip() {
     use crate::panes::grid::namespace_notification_id;
     use crate::screen::denormalize_notification_response;
 
-    // App sends a=report → namespaced with 'r' flag → denormalize returns app_wants_report=true
-    let namespaced = namespace_notification_id("i=myid:p=title:a=report", 5);
+    let namespaced = namespace_notification_id("i=myid:p=title:a=report", 5, true);
     assert!(
         namespaced.contains("i=p5r.myid"),
         "a=report should produce 'r' flag in namespace, got: {:?}",
         namespaced
     );
     let response = format!("i=p5r.myid;activated");
-    let (pane_id, wants_report, _is_query, _bytes) =
-        denormalize_notification_response(response.as_bytes()).unwrap();
-    assert_eq!(pane_id, 5);
-    assert!(wants_report, "Should detect 'r' flag as app_wants_report");
+    let response = denormalize_notification_response(response.as_bytes()).unwrap();
+    assert_eq!(response.terminal_id, 5);
+    assert!(
+        response.forward_to_pane,
+        "Should detect 'r' flag and hand the report to the app"
+    );
 
-    // App sends a=focus (no report) → namespaced without 'r' flag → denormalize returns false
-    let namespaced = namespace_notification_id("i=myid:p=title:a=focus", 5);
+    let namespaced = namespace_notification_id("i=myid:p=title:a=focus", 5, false);
     assert!(
         namespaced.contains("i=p5.myid"),
         "a=focus should NOT produce 'r' flag, got: {:?}",
@@ -15690,58 +17066,91 @@ fn osc99_report_flag_roundtrip() {
         namespaced
     );
     let response = format!("i=p5.myid;activated");
-    let (pane_id, wants_report, _is_query, _bytes) =
-        denormalize_notification_response(response.as_bytes()).unwrap();
-    assert_eq!(pane_id, 5);
-    assert!(!wants_report, "No 'r' flag means app did not want report");
+    let response = denormalize_notification_response(response.as_bytes()).unwrap();
+    assert_eq!(response.terminal_id, 5);
+    assert!(
+        !response.forward_to_pane,
+        "No 'r' flag means the app is not handed a report it never asked for"
+    );
+    assert!(
+        response.focus_pane,
+        "the pane is still focused when the notification is clicked"
+    );
 }
 
 #[test]
-fn osc99_query_flag_roundtrip() {
+fn osc99_query_response_is_handed_to_the_pane_without_focusing_it() {
     use crate::panes::grid::namespace_notification_id;
     use crate::screen::denormalize_notification_response;
 
-    // Capability query (p=?) gets 'q' flag
-    let namespaced = namespace_notification_id("i=qid:p=?", 3);
-    assert!(
-        namespaced.contains("i=p3q.qid"),
-        "p=? should produce 'q' flag, got: {:?}",
-        namespaced
+    let namespaced = namespace_notification_id("i=qid:p=?", 3, false);
+    assert_eq!(
+        namespaced, "i=p3.qid:p=?",
+        "a query is namespaced and otherwise left alone"
     );
-    let response = format!("i=p3q.qid;p=title,body");
-    let (pane_id, wants_report, is_query, _bytes) =
-        denormalize_notification_response(response.as_bytes()).unwrap();
-    assert_eq!(pane_id, 3);
-    assert!(!wants_report);
-    assert!(is_query, "Should detect 'q' flag");
+    let response = format!("i=p3.qid:p=?;a=focus,report:p=title,body");
+    let response = denormalize_notification_response(response.as_bytes()).unwrap();
+    assert_eq!(response.terminal_id, 3);
+    assert!(
+        response.forward_to_pane,
+        "the app is waiting for the answer to its query"
+    );
+    assert!(
+        !response.focus_pane,
+        "answering a query is not the user clicking a notification"
+    );
+    assert!(
+        String::from_utf8_lossy(&response.bytes).contains("i=qid:p=?"),
+        "the app's own identifier is restored, got: {:?}",
+        String::from_utf8_lossy(&response.bytes)
+    );
+}
 
-    // Both flags: a=report + p=? (unlikely but valid)
-    let namespaced = namespace_notification_id("i=both:p=?:a=report", 3);
-    assert!(
-        namespaced.contains("i=p3rq.both"),
-        "Both flags should be present, got: {:?}",
-        namespaced
-    );
-    let response = format!("i=p3rq.both;p=title,body");
-    let (pane_id, wants_report, is_query, _bytes) =
-        denormalize_notification_response(response.as_bytes()).unwrap();
-    assert_eq!(pane_id, 3);
-    assert!(wants_report);
-    assert!(is_query);
+#[test]
+fn osc99_close_report_does_not_steal_focus() {
+    use crate::screen::denormalize_notification_response;
 
-    // Regular notification (no p=?, no a=report) — no flags
-    let namespaced = namespace_notification_id("i=plain:p=title:a=focus", 3);
+    let response = denormalize_notification_response(b"i=p3.myid:p=close;").unwrap();
+    assert_eq!(response.terminal_id, 3);
     assert!(
-        namespaced.contains("i=p3.plain"),
-        "No flags expected, got: {:?}",
-        namespaced
+        response.forward_to_pane,
+        "close events only arrive when the app asked for them with c=1"
     );
-    let response = format!("i=p3.plain;activated");
-    let (pane_id, wants_report, is_query, _bytes) =
-        denormalize_notification_response(response.as_bytes()).unwrap();
-    assert_eq!(pane_id, 3);
-    assert!(!wants_report);
-    assert!(!is_query);
+    assert!(
+        !response.focus_pane,
+        "dismissing a notification is not activating it"
+    );
+}
+
+#[test]
+fn osc99_liveness_answer_is_restricted_to_the_asking_pane() {
+    use crate::screen::denormalize_notification_response;
+
+    let response =
+        denormalize_notification_response(b"i=p3.myid:p=alive;p3.one,p4r.other,p3r.two").unwrap();
+    let restored = String::from_utf8_lossy(&response.bytes).to_string();
+    assert!(
+        restored.contains(";one,two"),
+        "the pane's own identifiers are restored, got: {:?}",
+        restored
+    );
+    assert!(
+        !restored.contains("other"),
+        "identifiers belonging to other panes are not disclosed, got: {:?}",
+        restored
+    );
+}
+
+#[test]
+fn osc99_response_to_an_unidentified_notification_uses_the_protocol_default() {
+    use crate::screen::denormalize_notification_response;
+
+    let response = denormalize_notification_response(b"i=p3r.;activated").unwrap();
+    assert!(
+        String::from_utf8_lossy(&response.bytes).contains("i=0"),
+        "an app that sent no identifier is answered with i=0, got: {:?}",
+        String::from_utf8_lossy(&response.bytes)
+    );
 }
 
 #[test]
@@ -15772,5 +17181,1355 @@ fn hidden_cursor_still_emits_cup_for_host_terminal_positioning() {
     assert!(
         !client_output.contains("\u{1b}[?25h"),
         "Show-cursor sequence must not be present when app has hidden the cursor"
+    );
+}
+
+#[test]
+fn host_focus_events_only_reach_panes_that_asked_for_them() {
+    let size = Size {
+        cols: 121,
+        rows: 20,
+    };
+    let tty_stdin_bytes = Arc::new(Mutex::new(BTreeMap::new()));
+    let os_api = Box::new(FakeInputOutput {
+        tty_stdin_bytes: tty_stdin_bytes.clone(),
+        ..Default::default()
+    });
+    let mut tab = create_new_tab_with_os_api(size, ModeInfo::default(), &os_api);
+    let pane_id = PaneId::Terminal(1);
+
+    tab.send_host_focus_event_to_pane(pane_id, false);
+    assert!(
+        tty_stdin_bytes.lock().unwrap().is_empty(),
+        "a pane that did not subscribe to focus events receives nothing"
+    );
+
+    tab.handle_pty_bytes(1, Vec::from("\u{1b}[?1004h".as_bytes()))
+        .unwrap();
+    tab.send_host_focus_event_to_pane(pane_id, false);
+    tab.send_host_focus_event_to_pane(pane_id, true);
+
+    let written = tty_stdin_bytes
+        .lock()
+        .unwrap()
+        .get(&1)
+        .map(|bytes| String::from_utf8_lossy(bytes).to_string());
+    assert_eq!(written, Some("\u{1b}[O\u{1b}[I".to_owned()));
+}
+
+fn border_style_override(all: LineStyle) -> BorderStyleOverride {
+    BorderStyleOverride {
+        all: Some(all),
+        ..Default::default()
+    }
+}
+
+fn uniform_border_style(line_style: LineStyle) -> BorderStyle {
+    BorderStyle {
+        top: line_style,
+        right: line_style,
+        bottom: line_style,
+        left: line_style,
+        rounded_corners: false,
+    }
+}
+
+fn render_tab(tab: &mut Tab, size: Size, client_id: ClientId) -> String {
+    let mut output = Output::default();
+    tab.render(&mut output, None).unwrap();
+    take_snapshot(
+        output.serialize().unwrap().get(&client_id).unwrap(),
+        size.rows,
+        size.cols,
+        Palette::default(),
+    )
+}
+
+#[test]
+fn a_per_pane_border_style_is_drawn_on_the_pane_frame() {
+    let size = Size { cols: 40, rows: 10 };
+    let client_id = 1;
+    let mut tab = create_new_tab(size, ModeInfo::default());
+    tab.set_pane_border_style(
+        PaneId::Terminal(1),
+        border_style_override(LineStyle::Double),
+    );
+    let snapshot = render_tab(&mut tab, size, client_id);
+    assert!(snapshot.contains('╔'), "{}", snapshot);
+    assert!(snapshot.contains('║'), "{}", snapshot);
+    assert!(snapshot.contains('╝'), "{}", snapshot);
+}
+
+#[test]
+fn a_per_pane_border_style_reaches_a_floating_pane() {
+    let size = Size { cols: 60, rows: 20 };
+    let client_id = 1;
+    let mut tab = create_new_tab(size, ModeInfo::default());
+    tab.toggle_floating_panes(Some(client_id), None, None)
+        .unwrap();
+    tab.new_pane(
+        PaneId::Terminal(2),
+        None,
+        None,
+        false,
+        true,
+        NewPanePlacement::default(),
+        Some(client_id),
+        None,
+    )
+    .unwrap();
+    tab.set_pane_border_style(PaneId::Terminal(2), border_style_override(LineStyle::Heavy));
+    let snapshot = render_tab(&mut tab, size, client_id);
+    assert!(snapshot.contains('┏'), "{}", snapshot);
+    assert!(snapshot.contains('┃'), "{}", snapshot);
+}
+
+#[test]
+fn setting_a_border_style_on_an_unknown_pane_reports_failure() {
+    let size = Size { cols: 40, rows: 10 };
+    let mut tab = create_new_tab(size, ModeInfo::default());
+    assert!(tab.set_pane_border_style(
+        PaneId::Terminal(1),
+        border_style_override(LineStyle::Double)
+    ));
+    assert!(!tab.set_pane_border_style(
+        PaneId::Terminal(99),
+        border_style_override(LineStyle::Double)
+    ));
+}
+
+#[test]
+fn an_empty_border_style_override_restores_the_configured_default() {
+    let size = Size { cols: 40, rows: 10 };
+    let client_id = 1;
+    let mut tab = create_new_tab(size, ModeInfo::default());
+    tab.set_pane_border_style(
+        PaneId::Terminal(1),
+        border_style_override(LineStyle::Double),
+    );
+    assert!(render_tab(&mut tab, size, client_id).contains('╔'));
+    tab.set_pane_border_style(PaneId::Terminal(1), BorderStyleOverride::default());
+    let snapshot = render_tab(&mut tab, size, client_id);
+    assert!(!snapshot.contains('╔'), "{}", snapshot);
+    assert!(snapshot.contains('┌'), "{}", snapshot);
+}
+
+#[test]
+fn reconfiguring_the_global_border_style_repaints_open_panes() {
+    let size = Size { cols: 40, rows: 10 };
+    let client_id = 1;
+    let mut tab = create_new_tab(size, ModeInfo::default());
+    assert!(render_tab(&mut tab, size, client_id).contains('┌'));
+    let heavy = uniform_border_style(LineStyle::Heavy);
+    tab.update_border_styles(heavy, heavy);
+    let snapshot = render_tab(&mut tab, size, client_id);
+    assert!(snapshot.contains('┏'), "{}", snapshot);
+    assert!(snapshot.contains('┛'), "{}", snapshot);
+}
+
+#[test]
+fn a_per_pane_border_style_wins_over_the_global_one() {
+    let size = Size { cols: 40, rows: 10 };
+    let client_id = 1;
+    let mut tab = create_new_tab(size, ModeInfo::default());
+    let heavy = uniform_border_style(LineStyle::Heavy);
+    tab.update_border_styles(heavy, heavy);
+    tab.set_pane_border_style(
+        PaneId::Terminal(1),
+        border_style_override(LineStyle::Double),
+    );
+    let snapshot = render_tab(&mut tab, size, client_id);
+    assert!(snapshot.contains('╔'), "{}", snapshot);
+    assert!(!snapshot.contains('┏'), "{}", snapshot);
+}
+
+#[test]
+fn border_styles_from_a_layout_reach_the_panes() {
+    let size = Size { cols: 60, rows: 20 };
+    let client_id = 1;
+    let layout = r#"
+        layout {
+            pane border_style="double"
+            floating_panes {
+                pane x=2 y=2 width=20 height=6 border_style="heavy"
+            }
+        }
+    "#;
+    let mut tab = create_new_tab_with_layout(size, ModeInfo::default(), layout);
+    let snapshot = render_tab(&mut tab, size, client_id);
+    assert!(snapshot.contains('╔'), "{}", snapshot);
+    assert!(snapshot.contains('┏'), "{}", snapshot);
+}
+
+#[test]
+fn matching_neighbours_share_a_styled_grid_line() {
+    let size = Size { cols: 60, rows: 10 };
+    let client_id = 1;
+    let mut tab = create_new_tab(size, ModeInfo::default());
+    tab.set_pane_frames(PaneFrameStyle::None);
+    tab.vertical_split(PaneId::Terminal(2), None, client_id, None, None)
+        .unwrap();
+    tab.set_pane_border_style(
+        PaneId::Terminal(1),
+        border_style_override(LineStyle::Double),
+    );
+    tab.set_pane_border_style(
+        PaneId::Terminal(2),
+        border_style_override(LineStyle::Double),
+    );
+    let snapshot = render_tab(&mut tab, size, client_id);
+    assert!(snapshot.contains('║'), "{}", snapshot);
+}
+
+#[test]
+fn mismatched_neighbours_fall_back_to_the_ambient_grid_line() {
+    let size = Size { cols: 60, rows: 10 };
+    let client_id = 1;
+    let mut tab = create_new_tab(size, ModeInfo::default());
+    tab.set_pane_frames(PaneFrameStyle::None);
+    tab.vertical_split(PaneId::Terminal(2), None, client_id, None, None)
+        .unwrap();
+    let double = uniform_border_style(LineStyle::Double);
+    tab.update_border_styles(double, double);
+    tab.set_pane_border_style(PaneId::Terminal(2), border_style_override(LineStyle::Heavy));
+    let snapshot = render_tab(&mut tab, size, client_id);
+    assert!(snapshot.contains('║'), "{}", snapshot);
+    assert!(!snapshot.contains('┃'), "{}", snapshot);
+    assert!(!snapshot.contains('│'), "{}", snapshot);
+}
+
+#[test]
+fn mismatched_neighbours_fall_back_to_single_when_the_ambient_style_is_mixed() {
+    let size = Size { cols: 60, rows: 10 };
+    let client_id = 1;
+    let mut tab = create_new_tab(size, ModeInfo::default());
+    tab.set_pane_frames(PaneFrameStyle::None);
+    tab.vertical_split(PaneId::Terminal(2), None, client_id, None, None)
+        .unwrap();
+    let mixed = BorderStyle {
+        top: LineStyle::Double,
+        ..Default::default()
+    };
+    tab.update_border_styles(mixed, mixed);
+    tab.set_pane_border_style(PaneId::Terminal(2), border_style_override(LineStyle::Heavy));
+    let snapshot = render_tab(&mut tab, size, client_id);
+    assert!(snapshot.contains('│'), "{}", snapshot);
+}
+
+#[test]
+fn right_click_menu_setting_applies_live_to_the_tab() {
+    let size = Size {
+        cols: 121,
+        rows: 20,
+    };
+    let client_id = 1;
+    let mut tab = create_new_tab(size, ModeInfo::default());
+    tab.vertical_split(PaneId::Terminal(2), None, client_id, None, None)
+        .unwrap();
+    let right_click_on_unfocused_pane = MouseEvent::new_right_press_event(Position::new(5, 30));
+    tab.update_context_menu_enabled(false);
+    let effect = tab
+        .handle_mouse_event(&right_click_on_unfocused_pane, client_id)
+        .unwrap();
+    assert!(effect.open_context_menu.is_none());
+    tab.update_context_menu_enabled(true);
+    let effect = tab
+        .handle_mouse_event(&right_click_on_unfocused_pane, client_id)
+        .unwrap();
+    assert!(effect.open_context_menu.is_some());
+}
+
+fn open_test_info_popup(
+    tab: &mut Tab,
+    client_id: ClientId,
+    plugin_id: u32,
+    corner: zellij_utils::data::PopupCorner,
+    rows: usize,
+) {
+    tab.open_popup(
+        client_id,
+        plugin_id,
+        crate::tab::PopupPlacement::Corner(corner),
+        crate::tab::PopupKind::Info,
+        30,
+        rows,
+        None,
+        String::from("info"),
+    )
+    .unwrap();
+}
+
+#[test]
+fn an_information_popup_does_not_take_keys_or_hide_the_cursor() {
+    let size = Size {
+        cols: 121,
+        rows: 20,
+    };
+    let client_id = 1;
+    let mut tab = create_new_tab(size, ModeInfo::default());
+    open_test_popup(&mut tab, client_id, 1);
+    tab.close_popup(client_id);
+    open_test_info_popup(
+        &mut tab,
+        client_id,
+        50,
+        zellij_utils::data::PopupCorner::TopRight,
+        4,
+    );
+    assert!(tab.has_popup_for_client(client_id));
+    assert!(!tab.has_focused_popup_for_client(client_id));
+    assert_eq!(tab.popup_plugin_id(client_id), None);
+}
+
+#[test]
+fn clicks_outside_an_information_popup_are_not_handled_by_it_and_clicks_inside_are() {
+    let size = Size {
+        cols: 121,
+        rows: 20,
+    };
+    let client_id = 1;
+    let mut tab = create_new_tab(size, ModeInfo::default());
+    open_test_popup(&mut tab, client_id, 1);
+    tab.close_popup(client_id);
+    open_test_info_popup(
+        &mut tab,
+        client_id,
+        50,
+        zellij_utils::data::PopupCorner::TopRight,
+        4,
+    );
+    assert_eq!(
+        tab.handle_popup_mouse_event(
+            &MouseEvent::new_left_press_event(Position::new(10, 10)),
+            client_id
+        ),
+        None
+    );
+    assert!(tab.has_popup_for_client(client_id));
+    let (_, geom) = tab.info_popup_geoms(client_id)[0];
+    assert_eq!(
+        tab.handle_popup_mouse_event(
+            &MouseEvent::new_left_press_event(Position::new(geom.y as i32 + 1, geom.x as u16 + 1)),
+            client_id
+        ),
+        Some(crate::tab::PopupMouseOutcome::Consumed)
+    );
+    assert!(!tab.has_focused_popup_for_client(client_id));
+}
+
+#[test]
+fn information_popups_in_a_corner_stack_and_move_up_when_one_closes() {
+    let size = Size {
+        cols: 121,
+        rows: 20,
+    };
+    let client_id = 1;
+    let mut tab = create_new_tab(size, ModeInfo::default());
+    open_test_popup(&mut tab, client_id, 1);
+    tab.close_popup(client_id);
+    let corner = zellij_utils::data::PopupCorner::TopRight;
+    open_test_info_popup(&mut tab, client_id, 50, corner, 4);
+    open_test_info_popup(&mut tab, client_id, 51, corner, 3);
+    let geoms = tab.info_popup_geoms(client_id);
+    assert_eq!(geoms[0].0, 50);
+    assert_eq!((geoms[1].1.x, geoms[1].1.y), (91, 0));
+    assert_eq!((geoms[0].1.x, geoms[0].1.y), (91, 3));
+    tab.close_popup_with_plugin_id(51);
+    let geoms = tab.info_popup_geoms(client_id);
+    assert_eq!(geoms.len(), 1);
+    assert_eq!((geoms[0].1.x, geoms[0].1.y), (91, 0));
+}
+
+#[test]
+fn a_focused_popup_takes_keys_and_clicks_above_information_popups() {
+    let size = Size {
+        cols: 121,
+        rows: 20,
+    };
+    let client_id = 1;
+    let mut tab = create_new_tab(size, ModeInfo::default());
+    open_test_popup(&mut tab, client_id, 1);
+    tab.close_popup(client_id);
+    open_test_info_popup(
+        &mut tab,
+        client_id,
+        50,
+        zellij_utils::data::PopupCorner::TopLeft,
+        6,
+    );
+    open_test_prompt_popup(&mut tab, client_id, 60, 2);
+    open_test_info_popup(
+        &mut tab,
+        client_id,
+        51,
+        zellij_utils::data::PopupCorner::BottomRight,
+        3,
+    );
+    assert_eq!(tab.popup_plugin_id(client_id), Some(60));
+    assert!(tab.has_focused_popup_for_client(client_id));
+    assert_eq!(
+        tab.handle_popup_mouse_event(
+            &MouseEvent::new_left_press_event(Position::new(15, 60)),
+            client_id
+        ),
+        Some(crate::tab::PopupMouseOutcome::Consumed)
+    );
+    assert_eq!(tab.close_top_popup(client_id), Some(60));
+    assert_eq!(tab.popup_plugin_id(client_id), None);
+    assert_eq!(tab.info_popup_geoms(client_id).len(), 2);
+    assert_eq!(tab.close_info_popups(client_id).len(), 2);
+    assert!(!tab.has_popup_for_client(client_id));
+}
+
+fn render_snapshot_for_client(tab: &mut Tab, client_id: ClientId, size: Size) -> String {
+    let mut output = Output::default();
+    tab.render(&mut output, None).unwrap();
+    let serialized = output.serialize().unwrap();
+    take_snapshot(
+        serialized.get(&client_id).unwrap(),
+        size.rows,
+        size.cols,
+        Palette::default(),
+    )
+}
+
+#[test]
+fn an_information_popup_opened_above_a_prompt_popup_is_visible() {
+    let size = Size {
+        cols: 121,
+        rows: 20,
+    };
+    let client_id = 1;
+    let mut tab = create_new_tab(size, ModeInfo::default());
+    let (plugin_sender, _plugin_receiver) = channels::unbounded();
+    tab.senders
+        .replace_to_plugin(SenderWithContext::new(plugin_sender));
+    open_test_prompt_popup(&mut tab, client_id, 42, 8);
+    open_test_info_popup(
+        &mut tab,
+        client_id,
+        50,
+        zellij_utils::data::PopupCorner::TopRight,
+        4,
+    );
+    tab.handle_plugin_bytes(42, client_id, Vec::from("PROMPT-TEXT".as_bytes()))
+        .unwrap();
+    tab.handle_plugin_bytes(50, client_id, Vec::from("INFO-TEXT".as_bytes()))
+        .unwrap();
+    let snapshot = render_snapshot_for_client(&mut tab, client_id, size);
+    assert!(snapshot.contains("PROMPT-TEXT"), "{}", snapshot);
+    assert!(snapshot.contains("INFO-TEXT"), "{}", snapshot);
+}
+
+#[test]
+fn a_prompt_popup_opened_above_an_information_popup_leaves_both_visible() {
+    let size = Size {
+        cols: 121,
+        rows: 20,
+    };
+    let client_id = 1;
+    let mut tab = create_new_tab(size, ModeInfo::default());
+    let (plugin_sender, _plugin_receiver) = channels::unbounded();
+    tab.senders
+        .replace_to_plugin(SenderWithContext::new(plugin_sender));
+    open_test_info_popup(
+        &mut tab,
+        client_id,
+        50,
+        zellij_utils::data::PopupCorner::TopRight,
+        4,
+    );
+    open_test_prompt_popup(&mut tab, client_id, 42, 8);
+    tab.handle_plugin_bytes(42, client_id, Vec::from("PROMPT-TEXT".as_bytes()))
+        .unwrap();
+    tab.handle_plugin_bytes(50, client_id, Vec::from("INFO-TEXT".as_bytes()))
+        .unwrap();
+    let snapshot = render_snapshot_for_client(&mut tab, client_id, size);
+    assert!(snapshot.contains("PROMPT-TEXT"), "{}", snapshot);
+    assert!(snapshot.contains("INFO-TEXT"), "{}", snapshot);
+}
+
+fn keys_sent_to_plugin(
+    plugin_receiver: &Receiver<(PluginInstruction, ErrorContext)>,
+    plugin_id: u32,
+) -> (
+    Vec<zellij_utils::data::KeyWithModifier>,
+    Vec<zellij_utils::data::PermissionStatus>,
+) {
+    let mut keys = vec![];
+    let mut permission_results = vec![];
+    while let Ok((instruction, _)) = plugin_receiver.try_recv() {
+        match instruction {
+            PluginInstruction::Update(updates) => {
+                for (pid, _, event) in updates {
+                    if let zellij_utils::data::Event::Key(key) = event {
+                        if pid == Some(plugin_id) {
+                            keys.push(key);
+                        }
+                    }
+                }
+            },
+            PluginInstruction::PermissionRequestResult(pid, Some(1), permissions, status, None)
+                if pid == plugin_id
+                    && permissions
+                        == vec![zellij_utils::data::PermissionType::ReadApplicationState] =>
+            {
+                permission_results.push(status);
+            },
+            _ => {},
+        }
+    }
+    (keys, permission_results)
+}
+
+#[test]
+fn a_popup_plugin_shows_its_permission_request_and_takes_the_answer() {
+    let size = Size {
+        cols: 121,
+        rows: 20,
+    };
+    let client_id = 1;
+    let (mut tab, plugin_receiver) = create_new_tab_with_plugin_receiver(size, ModeInfo::default());
+    tab.open_popup(
+        client_id,
+        42,
+        crate::tab::PopupPlacement::At(Position::new(3, 3)),
+        crate::tab::PopupKind::Prompt,
+        60,
+        8,
+        None,
+        String::from("prompt"),
+    )
+    .unwrap();
+    assert!(tab.has_plugin(42));
+    tab.request_plugin_permissions(
+        42,
+        Some(zellij_utils::data::PluginPermission::new(
+            "my-plugin".to_owned(),
+            vec![zellij_utils::data::PermissionType::ReadApplicationState],
+        )),
+    );
+    let snapshot = render_snapshot_for_client(&mut tab, client_id, size);
+    assert!(snapshot.contains("asks permission to"), "{}", snapshot);
+    assert!(snapshot.contains("Allow?"), "{}", snapshot);
+    keys_sent_to_plugin(&plugin_receiver, 42);
+
+    let key =
+        |c: char| zellij_utils::data::KeyWithModifier::new(zellij_utils::data::BareKey::Char(c));
+    assert!(tab.send_key_to_popup(client_id, key('x'), vec![b'x'], false));
+    let (keys, results) = keys_sent_to_plugin(&plugin_receiver, 42);
+    assert!(keys.is_empty());
+    assert!(results.is_empty());
+
+    assert!(tab.send_key_to_popup(client_id, key('y'), vec![b'y'], false));
+    let (keys, results) = keys_sent_to_plugin(&plugin_receiver, 42);
+    assert!(keys.is_empty());
+    assert_eq!(results.len(), 1);
+    assert!(matches!(
+        results[0],
+        zellij_utils::data::PermissionStatus::Granted
+    ));
+    let snapshot = render_snapshot_for_client(&mut tab, client_id, size);
+    assert!(!snapshot.contains("Allow?"), "{}", snapshot);
+
+    assert!(tab.send_key_to_popup(client_id, key('a'), vec![b'a'], false));
+    let (keys, _) = keys_sent_to_plugin(&plugin_receiver, 42);
+    assert_eq!(keys, vec![key('a')]);
+}
+
+fn center_of_pane(tab: &Tab, pane_id: PaneId) -> Position {
+    let pane = tab.get_pane_with_id(pane_id).unwrap();
+    Position::new(
+        (pane.y() + pane.rows() / 2) as i32,
+        (pane.x() + pane.cols() / 2) as u16,
+    )
+}
+
+#[test]
+fn mouse_selection_is_released_when_the_selecting_plugin_pane_closes() {
+    let size = Size {
+        cols: 121,
+        rows: 20,
+    };
+    let client_id = 1;
+    let (mut tab, _plugin_receiver) =
+        create_new_tab_with_plugin_receiver(size, ModeInfo::default());
+    tab.new_pane(
+        PaneId::Plugin(7),
+        None,
+        None,
+        false,
+        true,
+        NewPanePlacement::default(),
+        Some(client_id),
+        None,
+    )
+    .unwrap();
+    assert_eq!(tab.get_active_pane_id(client_id), Some(PaneId::Plugin(7)));
+    let plugin_point = center_of_pane(&tab, PaneId::Plugin(7));
+    tab.handle_mouse_event(&MouseEvent::new_left_press_event(plugin_point), client_id)
+        .unwrap();
+    assert_eq!(tab.selecting_with_mouse_in_pane, Some(PaneId::Plugin(7)));
+
+    tab.close_pane(PaneId::Plugin(7), false, None);
+    tab.handle_mouse_event(&MouseEvent::new_left_release_event(plugin_point), client_id)
+        .unwrap();
+    assert!(tab.selecting_with_mouse_in_pane.is_none());
+
+    let terminal_point = center_of_pane(&tab, PaneId::Terminal(1));
+    tab.handle_mouse_event(&MouseEvent::new_left_press_event(terminal_point), client_id)
+        .unwrap();
+    assert_eq!(tab.selecting_with_mouse_in_pane, Some(PaneId::Terminal(1)));
+    tab.handle_mouse_event(
+        &MouseEvent::new_left_release_event(terminal_point),
+        client_id,
+    )
+    .unwrap();
+    assert!(tab.selecting_with_mouse_in_pane.is_none());
+}
+
+#[test]
+fn mouse_events_work_again_when_the_selecting_pane_is_gone() {
+    let size = Size {
+        cols: 121,
+        rows: 20,
+    };
+    let client_id = 1;
+    let mut tab = create_new_tab(size, ModeInfo::default());
+    tab.selecting_with_mouse_in_pane = Some(PaneId::Plugin(99));
+    let terminal_point = center_of_pane(&tab, PaneId::Terminal(1));
+    tab.handle_mouse_event(&MouseEvent::new_left_press_event(terminal_point), client_id)
+        .unwrap();
+    assert_eq!(tab.selecting_with_mouse_in_pane, Some(PaneId::Terminal(1)));
+    tab.handle_mouse_event(
+        &MouseEvent::new_left_release_event(terminal_point),
+        client_id,
+    )
+    .unwrap();
+    assert!(tab.selecting_with_mouse_in_pane.is_none());
+}
+
+#[test]
+fn a_collapsed_bar_gives_its_row_to_the_viewport_across_a_swap_layout() {
+    let size = Size {
+        cols: 121,
+        rows: 20,
+    };
+    let base_layout = r#"
+        layout {
+            pane
+            pane size=1 borderless=true {
+                plugin location="zellij:status-bar"
+            }
+        }
+    "#;
+    let swap_layouts = r#"
+        layout {
+            swap_tiled_layout {
+                tab {
+                    pane size=1 borderless=true {
+                        plugin location="zellij:status-bar"
+                    }
+                    pane
+                }
+            }
+        }
+    "#;
+    let (base_layout, base_floating_layout) =
+        Layout::from_kdl(base_layout, Some("file_name.kdl".into()), None, None)
+            .unwrap()
+            .template
+            .unwrap();
+    let mut new_plugin_ids = HashMap::new();
+    new_plugin_ids.insert(
+        RunPluginOrAlias::from_url("zellij:status-bar", &None, None, None).unwrap(),
+        vec![1],
+    );
+    let swap_layout =
+        Layout::from_kdl(swap_layouts, Some("file_name.kdl".into()), None, None).unwrap();
+    let mut tab = create_new_tab_with_swap_layouts(
+        size,
+        ModeInfo::default(),
+        (
+            swap_layout.swap_tiled_layouts.clone(),
+            swap_layout.swap_floating_layouts.clone(),
+        ),
+        Some((
+            base_layout,
+            base_floating_layout,
+            vec![(1, None)],
+            vec![],
+            new_plugin_ids,
+        )),
+        true,
+        true,
+    );
+    tab.set_pane_collapsed(PaneId::Plugin(1), true);
+    assert_eq!(
+        tab.viewport.borrow().rows,
+        20,
+        "a collapsed bar should give its row to the viewport"
+    );
+
+    tab.next_swap_layout().unwrap();
+
+    // the swap is solved with the bar taking part, so the viewport computed during it still
+    // leaves the bar's row out; collapsing the bar again afterwards must hand the row back
+    let viewport = *tab.viewport.borrow();
+    assert_eq!(
+        (viewport.y, viewport.rows),
+        (0, 20),
+        "the viewport should still cover the collapsed bar's row after a swap layout"
+    );
+}
+
+fn mousebinds_from(text: &str) -> Arc<zellij_utils::input::mousebinds::Mousebinds> {
+    let config = zellij_utils::input::config::Config::from_kdl(
+        text,
+        Some(zellij_utils::input::config::Config::from_default_assets().unwrap()),
+    )
+    .unwrap();
+    config.mousebinds.clone()
+}
+
+fn click_with(
+    tab: &mut Tab,
+    event: MouseEvent,
+    client_id: ClientId,
+    mousebinds: &Arc<zellij_utils::input::mousebinds::Mousebinds>,
+) -> super::MouseEffect {
+    tab.handle_mouse_event_with_passthrough(&event, client_id, None, mousebinds.clone())
+        .unwrap()
+}
+
+fn tab_with_two_tiled_panes(size: Size, client_id: ClientId) -> Tab {
+    let mut tab = create_new_tab(size, ModeInfo::default());
+    tab.vertical_split(PaneId::Terminal(2), None, client_id, None, None)
+        .unwrap();
+    let mut output = Output::default();
+    tab.render(&mut output, None).unwrap();
+    tab
+}
+
+#[test]
+fn double_click_on_a_tiled_pane_frame_toggles_fullscreen() {
+    let size = Size {
+        cols: 121,
+        rows: 20,
+    };
+    let client_id = 1;
+    let mut tab = tab_with_two_tiled_panes(size, client_id);
+    let frame_position = Position::new(5, 60);
+    for _ in 0..2 {
+        tab.handle_mouse_event(&MouseEvent::new_left_press_event(frame_position), client_id)
+            .unwrap();
+        tab.handle_mouse_event(
+            &MouseEvent::new_left_release_event(frame_position),
+            client_id,
+        )
+        .unwrap();
+    }
+    assert!(tab.is_fullscreen_active());
+    assert_eq!(tab.fullscreen_pane_id(), Some(PaneId::Terminal(1)));
+}
+
+#[test]
+fn double_click_on_a_floating_pane_frame_toggles_its_fullscreen() {
+    let size = Size {
+        cols: 121,
+        rows: 20,
+    };
+    let client_id = 1;
+    let mut tab = tab_with_floating_pane(size, client_id);
+    let geom_before = tab
+        .get_pane_with_id(PaneId::Terminal(2))
+        .unwrap()
+        .position_and_size();
+    let frame_position = Position::new(geom_before.y as i32, (geom_before.x + 3) as u16);
+    let double_click = |tab: &mut Tab| {
+        for _ in 0..2 {
+            tab.handle_mouse_event(&MouseEvent::new_left_press_event(frame_position), client_id)
+                .unwrap();
+            tab.handle_mouse_event(
+                &MouseEvent::new_left_release_event(frame_position),
+                client_id,
+            )
+            .unwrap();
+        }
+    };
+    double_click(&mut tab);
+    assert!(tab.floating_panes.fullscreen_is_active());
+    assert_eq!(
+        tab.floating_panes.fullscreen_pane_id(),
+        Some(PaneId::Terminal(2))
+    );
+}
+
+#[test]
+fn clicks_far_apart_are_not_counted_as_a_double_click() {
+    let size = Size {
+        cols: 121,
+        rows: 20,
+    };
+    let client_id = 1;
+    let mut tab = tab_with_two_tiled_panes(size, client_id);
+    for position in [Position::new(5, 60), Position::new(6, 60)] {
+        tab.handle_mouse_event(&MouseEvent::new_left_press_event(position), client_id)
+            .unwrap();
+        tab.handle_mouse_event(&MouseEvent::new_left_release_event(position), client_id)
+            .unwrap();
+    }
+    assert!(!tab.is_fullscreen_active());
+}
+
+#[test]
+fn a_rebound_ctrl_click_runs_its_new_behaviour() {
+    let size = Size {
+        cols: 121,
+        rows: 20,
+    };
+    let client_id = 1;
+    let mut tab = tab_with_two_tiled_panes(size, client_id);
+    let mousebinds = mousebinds_from(
+        "mousebinds {\n    shared {\n        bind \"Ctrl Left\" on=\"content\" { ToggleFullscreen; }\n    }\n}\n",
+    );
+    click_with(
+        &mut tab,
+        MouseEvent::new_left_press_with_ctrl_event(Position::new(5, 70)),
+        client_id,
+        &mousebinds,
+    );
+    assert_eq!(tab.fullscreen_pane_id(), Some(PaneId::Terminal(2)));
+}
+
+#[test]
+fn an_ignored_scroll_leaves_the_pane_where_it_was() {
+    let size = Size {
+        cols: 121,
+        rows: 20,
+    };
+    let client_id = 1;
+    let mut tab = create_new_tab(size, ModeInfo::default());
+    for i in 0..60 {
+        tab.handle_pty_bytes(1, format!("line {}\n\r", i).into_bytes())
+            .unwrap();
+    }
+    let mousebinds = mousebinds_from(
+        "mousebinds {\n    shared {\n        bind \"ScrollUp\" { Ignore; }\n    }\n}\n",
+    );
+    click_with(
+        &mut tab,
+        MouseEvent::new_scroll_up_event(Position::new(5, 10)),
+        client_id,
+        &mousebinds,
+    );
+    assert!(!tab.get_active_pane(client_id).unwrap().is_scrolled());
+    tab.handle_mouse_event(
+        &MouseEvent::new_scroll_up_event(Position::new(5, 10)),
+        client_id,
+    )
+    .unwrap();
+    assert!(tab.get_active_pane(client_id).unwrap().is_scrolled());
+}
+
+#[test]
+fn an_action_binding_runs_once_per_press() {
+    let size = Size {
+        cols: 121,
+        rows: 20,
+    };
+    let client_id = 1;
+    let mut tab = create_new_tab(size, ModeInfo::default());
+    let mousebinds = mousebinds_from(
+        "mousebinds {\n    shared {\n        bind \"Middle\" { GoToNextTab; }\n    }\n}\n",
+    );
+    let position = Position::new(5, 10);
+    let press = click_with(
+        &mut tab,
+        MouseEvent::new_middle_press_event(position),
+        client_id,
+        &mousebinds,
+    );
+    assert_eq!(
+        press.run_actions,
+        Some(vec![zellij_utils::input::actions::Action::GoToNextTab])
+    );
+    let motion = click_with(
+        &mut tab,
+        MouseEvent::new_middle_motion_event(position),
+        client_id,
+        &mousebinds,
+    );
+    assert_eq!(motion.run_actions, None);
+    let release = click_with(
+        &mut tab,
+        MouseEvent::new_middle_release_event(position),
+        client_id,
+        &mousebinds,
+    );
+    assert_eq!(release.run_actions, None);
+}
+
+#[test]
+fn cleared_mouse_bindings_pass_everything_to_the_app() {
+    let size = Size {
+        cols: 121,
+        rows: 20,
+    };
+    let client_id = 1;
+    let mut pty_instruction_bus = MockPtyInstructionBus::new();
+    let mut tab = create_new_tab_with_mock_pty_writer(
+        size,
+        ModeInfo::default(),
+        pty_instruction_bus.pty_write_sender(),
+    );
+    pty_instruction_bus.start();
+    tab.handle_pty_bytes(1, Vec::from("\u{1b}[?1002h\u{1b}[?1006h".as_bytes()))
+        .unwrap();
+    let mousebinds = mousebinds_from("mousebinds clear-defaults=true {\n}\n");
+    let position = Position::new(5, 10);
+    click_with(
+        &mut tab,
+        MouseEvent::new_left_press_with_alt_event(position),
+        client_id,
+        &mousebinds,
+    );
+    click_with(
+        &mut tab,
+        MouseEvent::new_left_release_event(position),
+        client_id,
+        &mousebinds,
+    );
+    click_with(
+        &mut tab,
+        MouseEvent::new_scroll_up_event(position),
+        client_id,
+        &mousebinds,
+    );
+    pty_instruction_bus.exit();
+    assert_eq!(
+        pty_instruction_bus.clone_output(),
+        vec![
+            "\u{1b}[<8;10;5M".to_string(),
+            "\u{1b}[<0;10;5m".to_string(),
+            "\u{1b}[<64;10;5M".to_string(),
+        ]
+    );
+}
+
+#[test]
+fn passed_wheel_events_become_arrow_keys_in_a_full_screen_app_without_mouse_reporting() {
+    let size = Size {
+        cols: 121,
+        rows: 20,
+    };
+    let client_id = 1;
+    let mut pty_instruction_bus = MockPtyInstructionBus::new();
+    let mut tab = create_new_tab_with_mock_pty_writer(
+        size,
+        ModeInfo::default(),
+        pty_instruction_bus.pty_write_sender(),
+    );
+    pty_instruction_bus.start();
+    tab.handle_pty_bytes(1, Vec::from("\u{1b}[?1049h".as_bytes()))
+        .unwrap();
+    let mousebinds = mousebinds_from(
+        "mousebinds {\n    shared {\n        bind \"ScrollDown\" { PassToApp; }\n    }\n}\n",
+    );
+    click_with(
+        &mut tab,
+        MouseEvent::new_scroll_down_event(Position::new(5, 10)),
+        client_id,
+        &mousebinds,
+    );
+    pty_instruction_bus.exit();
+    assert_eq!(
+        pty_instruction_bus.clone_output(),
+        vec!["\u{1b}[B".to_string(); 3]
+    );
+}
+
+#[test]
+fn a_press_passed_to_the_app_keeps_its_drag_and_release_with_the_app() {
+    let size = Size {
+        cols: 121,
+        rows: 20,
+    };
+    let client_id = 1;
+    let mut pty_instruction_bus = MockPtyInstructionBus::new();
+    let mut tab = create_new_tab_with_mock_pty_writer(
+        size,
+        ModeInfo::default(),
+        pty_instruction_bus.pty_write_sender(),
+    );
+    pty_instruction_bus.start();
+    tab.handle_pty_bytes(1, Vec::from("\u{1b}[?1002h\u{1b}[?1006h".as_bytes()))
+        .unwrap();
+    let mousebinds = mousebinds_from(
+        "mousebinds {\n    shared {\n        bind \"Ctrl Left\" on=\"content\" { PassToApp; }\n    }\n}\n",
+    );
+    click_with(
+        &mut tab,
+        MouseEvent::new_left_press_with_ctrl_event(Position::new(5, 10)),
+        client_id,
+        &mousebinds,
+    );
+    click_with(
+        &mut tab,
+        MouseEvent::new_left_motion_with_ctrl_event(Position::new(6, 12)),
+        client_id,
+        &mousebinds,
+    );
+    click_with(
+        &mut tab,
+        MouseEvent::new_left_release_with_ctrl_event(Position::new(6, 12)),
+        client_id,
+        &mousebinds,
+    );
+    pty_instruction_bus.exit();
+    assert_eq!(pty_instruction_bus.clone_output().len(), 3);
+}
+
+#[test]
+fn a_program_with_mouse_reporting_gets_both_raw_clicks_of_a_double_click() {
+    let size = Size {
+        cols: 121,
+        rows: 20,
+    };
+    let client_id = 1;
+    let mut pty_instruction_bus = MockPtyInstructionBus::new();
+    let mut tab = create_new_tab_with_mock_pty_writer(
+        size,
+        ModeInfo::default(),
+        pty_instruction_bus.pty_write_sender(),
+    );
+    pty_instruction_bus.start();
+    tab.handle_pty_bytes(1, Vec::from("\u{1b}[?1000h\u{1b}[?1006h".as_bytes()))
+        .unwrap();
+    let position = Position::new(5, 10);
+    for _ in 0..2 {
+        tab.handle_mouse_event(&MouseEvent::new_left_press_event(position), client_id)
+            .unwrap();
+        tab.handle_mouse_event(&MouseEvent::new_left_release_event(position), client_id)
+            .unwrap();
+    }
+    pty_instruction_bus.exit();
+    assert_eq!(
+        pty_instruction_bus.clone_output(),
+        vec![
+            "\u{1b}[<0;10;5M".to_string(),
+            "\u{1b}[<0;10;5m".to_string(),
+            "\u{1b}[<0;10;5M".to_string(),
+            "\u{1b}[<0;10;5m".to_string(),
+        ]
+    );
+    assert!(!tab.is_fullscreen_active());
+}
+
+#[test]
+fn double_and_triple_clicks_select_a_word_and_a_line_through_the_default_bindings() {
+    let size = Size {
+        cols: 121,
+        rows: 20,
+    };
+    let client_id = 1;
+    let mut tab = create_new_tab(size, ModeInfo::default());
+    tab.handle_pty_bytes(1, Vec::from("first second third".as_bytes()))
+        .unwrap();
+    let position = Position::new(1, 9);
+    let click = |tab: &mut Tab| {
+        tab.handle_mouse_event(&MouseEvent::new_left_press_event(position), client_id)
+            .unwrap();
+        tab.handle_mouse_event(&MouseEvent::new_left_release_event(position), client_id)
+            .unwrap();
+    };
+    let selected = |tab: &Tab| {
+        tab.get_active_pane(client_id)
+            .unwrap()
+            .get_selected_text(client_id)
+    };
+    click(&mut tab);
+    click(&mut tab);
+    assert_eq!(selected(&tab), Some("second".to_owned()));
+    click(&mut tab);
+    assert_eq!(selected(&tab), Some("first second third".to_owned()));
+}
+
+#[test]
+fn scrolling_with_app_first_off_scrolls_zellij_even_when_the_program_wants_the_mouse() {
+    let size = Size {
+        cols: 121,
+        rows: 20,
+    };
+    let client_id = 1;
+    let mut pty_instruction_bus = MockPtyInstructionBus::new();
+    let mut tab = create_new_tab_with_mock_pty_writer(
+        size,
+        ModeInfo::default(),
+        pty_instruction_bus.pty_write_sender(),
+    );
+    pty_instruction_bus.start();
+    for i in 0..60 {
+        tab.handle_pty_bytes(1, format!("line {}\n\r", i).into_bytes())
+            .unwrap();
+    }
+    tab.handle_pty_bytes(1, Vec::from("\u{1b}[?1000h\u{1b}[?1006h".as_bytes()))
+        .unwrap();
+    let mousebinds = mousebinds_from(
+        "mousebinds {\n    shared {\n        bind \"ScrollUp\" app_first=false { Scroll 3; }\n    }\n}\n",
+    );
+    click_with(
+        &mut tab,
+        MouseEvent::new_scroll_up_event(Position::new(5, 10)),
+        client_id,
+        &mousebinds,
+    );
+    pty_instruction_bus.exit();
+    assert!(pty_instruction_bus.clone_output().is_empty());
+    assert!(tab.get_active_pane(client_id).unwrap().is_scrolled());
+}
+
+#[test]
+fn dragging_inside_a_floating_pane_with_a_move_pane_binding_moves_it() {
+    let size = Size {
+        cols: 121,
+        rows: 20,
+    };
+    let client_id = 1;
+    let mut tab = tab_with_floating_pane(size, client_id);
+    let geom_before = tab
+        .get_pane_with_id(PaneId::Terminal(2))
+        .unwrap()
+        .position_and_size();
+    let inside = Position::new((geom_before.y + 2) as i32, (geom_before.x + 3) as u16);
+    let moved_to = Position::new((geom_before.y + 4) as i32, (geom_before.x + 8) as u16);
+    let mousebinds = mousebinds_from(
+        "mousebinds {\n    shared {\n        bind \"Alt Left\" { MovePane; }\n    }\n}\n",
+    );
+    click_with(
+        &mut tab,
+        MouseEvent::new_left_press_with_alt_event(inside),
+        client_id,
+        &mousebinds,
+    );
+    click_with(
+        &mut tab,
+        MouseEvent::new_left_motion_with_alt_event(moved_to),
+        client_id,
+        &mousebinds,
+    );
+    let mut release = MouseEvent::new_left_release_event(moved_to);
+    release.alt = true;
+    click_with(&mut tab, release, client_id, &mousebinds);
+    let geom_after = tab
+        .get_pane_with_id(PaneId::Terminal(2))
+        .unwrap()
+        .position_and_size();
+    assert_eq!(geom_after.x, geom_before.x + 5);
+    assert_eq!(geom_after.y, geom_before.y + 2);
+}
+
+fn mouse_events_sent_to_plugin(
+    plugin_receiver: &Receiver<(PluginInstruction, ErrorContext)>,
+    plugin_id: u32,
+) -> Vec<zellij_utils::data::Mouse> {
+    let mut events = vec![];
+    while let Ok((instruction, _)) = plugin_receiver.try_recv() {
+        if let PluginInstruction::Update(updates) = instruction {
+            for (pid, _, event) in updates {
+                if pid != Some(plugin_id) {
+                    continue;
+                }
+                match event {
+                    zellij_utils::data::Event::Mouse(mouse)
+                    | zellij_utils::data::Event::MouseWithModifiers(mouse, _) => events.push(mouse),
+                    _ => {},
+                }
+            }
+        }
+    }
+    events
+}
+
+fn tab_with_unselectable_plugin_pane(
+    size: Size,
+    client_id: ClientId,
+) -> (Tab, Receiver<(PluginInstruction, ErrorContext)>) {
+    let (mut tab, plugin_receiver) = create_new_tab_with_plugin_receiver(size, ModeInfo::default());
+    tab.new_pane(
+        PaneId::Plugin(7),
+        None,
+        None,
+        false,
+        true,
+        NewPanePlacement::default(),
+        Some(client_id),
+        None,
+    )
+    .unwrap();
+    tab.set_pane_selectable(PaneId::Plugin(7), false);
+    while plugin_receiver.try_recv().is_ok() {}
+    (tab, plugin_receiver)
+}
+
+#[test]
+fn dragging_in_an_unselectable_plugin_pane_sends_hold_and_release_to_the_plugin() {
+    use zellij_utils::data::Mouse;
+    let size = Size {
+        cols: 121,
+        rows: 20,
+    };
+    let client_id = 1;
+    let (mut tab, plugin_receiver) = tab_with_unselectable_plugin_pane(size, client_id);
+    assert_eq!(tab.get_active_pane_id(client_id), Some(PaneId::Terminal(1)));
+    let plugin_point = center_of_pane(&tab, PaneId::Plugin(7));
+    let moved_point = Position::new(
+        plugin_point.line() as i32,
+        (plugin_point.column() + 3) as u16,
+    );
+    tab.handle_mouse_event(&MouseEvent::new_left_press_event(plugin_point), client_id)
+        .unwrap();
+    assert_eq!(tab.selecting_with_mouse_in_pane, Some(PaneId::Plugin(7)));
+    assert_eq!(tab.get_active_pane_id(client_id), Some(PaneId::Terminal(1)));
+    tab.handle_mouse_event(&MouseEvent::new_left_motion_event(moved_point), client_id)
+        .unwrap();
+    tab.handle_mouse_event(&MouseEvent::new_left_release_event(moved_point), client_id)
+        .unwrap();
+    assert!(tab.selecting_with_mouse_in_pane.is_none());
+    let events = mouse_events_sent_to_plugin(&plugin_receiver, 7);
+    let kinds: Vec<&'static str> = events
+        .iter()
+        .filter_map(|event| match event {
+            Mouse::LeftClick(..) => Some("click"),
+            Mouse::Hold(..) => Some("hold"),
+            Mouse::Release(..) => Some("release"),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(kinds, vec!["click", "hold", "release"], "{:?}", events);
+    let click_column = events.iter().find_map(|event| match event {
+        Mouse::LeftClick(_, column) => Some(*column),
+        _ => None,
+    });
+    let hold_column = events.iter().find_map(|event| match event {
+        Mouse::Hold(_, column) => Some(*column),
+        _ => None,
+    });
+    assert_eq!(hold_column, click_column.map(|column| column + 3));
+}
+
+#[test]
+fn a_middle_click_on_an_unselectable_plugin_pane_does_not_start_a_drag() {
+    let size = Size {
+        cols: 121,
+        rows: 20,
+    };
+    let client_id = 1;
+    let (mut tab, _plugin_receiver) = tab_with_unselectable_plugin_pane(size, client_id);
+    let plugin_point = center_of_pane(&tab, PaneId::Plugin(7));
+    tab.handle_mouse_event(&MouseEvent::new_middle_press_event(plugin_point), client_id)
+        .unwrap();
+    assert!(tab.selecting_with_mouse_in_pane.is_none());
+    let terminal_point = center_of_pane(&tab, PaneId::Terminal(1));
+    tab.handle_mouse_event(&MouseEvent::new_left_press_event(terminal_point), client_id)
+        .unwrap();
+    assert_eq!(tab.selecting_with_mouse_in_pane, Some(PaneId::Terminal(1)));
+}
+
+#[test]
+fn clicking_a_pinned_unselectable_plugin_pane_sends_it_the_click_without_moving_focus() {
+    use zellij_utils::data::Mouse;
+    let size = Size {
+        cols: 121,
+        rows: 20,
+    };
+    let client_id = 1;
+    let (mut tab, plugin_receiver) = create_new_tab_with_plugin_receiver(size, ModeInfo::default());
+    let coordinates = FloatingPaneCoordinates {
+        x: Some(PercentOrFixed::Fixed(30)),
+        y: Some(PercentOrFixed::Fixed(5)),
+        width: Some(PercentOrFixed::Fixed(40)),
+        height: Some(PercentOrFixed::Fixed(8)),
+        pinned: Some(true),
+        borderless: Some(false),
+        border_style: None,
+    };
+    tab.new_floating_pane(
+        PaneId::Plugin(8),
+        None,
+        None,
+        false,
+        false,
+        Some(coordinates),
+        None,
+    )
+    .unwrap();
+    tab.set_pane_selectable(PaneId::Plugin(8), false);
+    assert!(!tab.floating_panes.panes_are_visible());
+    while plugin_receiver.try_recv().is_ok() {}
+    let active_before = tab.get_active_pane_id(client_id);
+    let plugin_point = center_of_pane(&tab, PaneId::Plugin(8));
+    tab.handle_mouse_event(&MouseEvent::new_left_press_event(plugin_point), client_id)
+        .unwrap();
+    tab.handle_mouse_event(&MouseEvent::new_left_release_event(plugin_point), client_id)
+        .unwrap();
+    assert_eq!(tab.get_active_pane_id(client_id), active_before);
+    assert!(!tab.floating_panes.panes_are_visible());
+    let events = mouse_events_sent_to_plugin(&plugin_receiver, 8);
+    assert!(
+        events.iter().any(|e| matches!(e, Mouse::LeftClick(..))),
+        "{:?}",
+        events
+    );
+    assert!(
+        events.iter().any(|e| matches!(e, Mouse::Release(..))),
+        "{:?}",
+        events
+    );
+}
+
+#[test]
+fn clicking_a_hovered_unselectable_plugin_pane_keeps_its_hover() {
+    use zellij_utils::data::Mouse;
+    let size = Size {
+        cols: 121,
+        rows: 20,
+    };
+    let client_id = 1;
+    let (mut tab, plugin_receiver) = tab_with_unselectable_plugin_pane(size, client_id);
+    let plugin_point = center_of_pane(&tab, PaneId::Plugin(7));
+    tab.handle_mouse_event(&MouseEvent::new_buttonless_motion(plugin_point), client_id)
+        .unwrap();
+    let events = mouse_events_sent_to_plugin(&plugin_receiver, 7);
+    assert!(
+        events.iter().any(|e| matches!(e, Mouse::Hover(..))),
+        "{:?}",
+        events
+    );
+    tab.handle_mouse_event(&MouseEvent::new_left_press_event(plugin_point), client_id)
+        .unwrap();
+    tab.handle_mouse_event(&MouseEvent::new_left_release_event(plugin_point), client_id)
+        .unwrap();
+    let events = mouse_events_sent_to_plugin(&plugin_receiver, 7);
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, Mouse::Hover(_, column) if *column >= size.cols)),
+        "{:?}",
+        events
+    );
+    let terminal_point = center_of_pane(&tab, PaneId::Terminal(1));
+    tab.handle_mouse_event(
+        &MouseEvent::new_buttonless_motion(terminal_point),
+        client_id,
+    )
+    .unwrap();
+    let events = mouse_events_sent_to_plugin(&plugin_receiver, 7);
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, Mouse::Hover(_, column) if *column >= size.cols)),
+        "{:?}",
+        events
     );
 }

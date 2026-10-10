@@ -29,8 +29,8 @@ use std::sync::{
     Arc, Mutex,
 };
 use std::time::{Duration, Instant};
-use zellij_utils::consts::is_ipc_socket;
 
+use crate::os_input_output::PaneEnv;
 use crate::panes::PaneId;
 use crate::plugins::{PluginId, PluginInstruction};
 use crate::pty::PtyInstruction;
@@ -55,6 +55,12 @@ pub enum BackgroundJob {
         PathBuf,
         BTreeMap<String, String>,
     ), // command, args, env_variables, cwd, context
+    RunInBackground {
+        command: PathBuf,
+        args: Vec<String>,
+        cwd: Option<PathBuf>,
+        env: PaneEnv,
+    },
     WebRequest(
         PluginId,
         ClientId,
@@ -70,13 +76,16 @@ pub enum BackgroundJob {
     ClearHelpText {
         client_id: ClientId,
     },
+    ClearCommandOutputFlash {
+        pane_id: PaneId,
+    },
     FlashPaneBell(Vec<PaneId>),
     StopFlashPaneBell(Vec<PaneId>),
     FlashTabBell(usize),     // usize = tab_id
     StopFlashTabBell(usize), // usize = tab_id
-    MobileGateTimeout(ClientId),
     StartNestedGuestPing(PaneId),
     StopNestedGuestPing(PaneId),
+    TrimAllocator,
     Exit,
 }
 
@@ -91,6 +100,7 @@ impl From<&BackgroundJob> for BackgroundJobContext {
             BackgroundJob::ReportSessionInfo(..) => BackgroundJobContext::ReportSessionInfo,
             BackgroundJob::ReportLayoutInfo(..) => BackgroundJobContext::ReportLayoutInfo,
             BackgroundJob::RunCommand(..) => BackgroundJobContext::RunCommand,
+            BackgroundJob::RunInBackground { .. } => BackgroundJobContext::RunInBackground,
             BackgroundJob::WebRequest(..) => BackgroundJobContext::WebRequest,
             BackgroundJob::ReportPluginList(..) => BackgroundJobContext::ReportPluginList,
             BackgroundJob::RenderToClients => BackgroundJobContext::ReportPluginList,
@@ -101,20 +111,34 @@ impl From<&BackgroundJob> for BackgroundJobContext {
                 BackgroundJobContext::QueryZellijWebServerStatus
             },
             BackgroundJob::ClearHelpText { .. } => BackgroundJobContext::ClearHelpText,
+            BackgroundJob::ClearCommandOutputFlash { .. } => {
+                BackgroundJobContext::ClearCommandOutputFlash
+            },
             BackgroundJob::FlashPaneBell(..) => BackgroundJobContext::FlashPaneBell,
             BackgroundJob::StopFlashPaneBell(..) => BackgroundJobContext::StopFlashPaneBell,
             BackgroundJob::FlashTabBell(..) => BackgroundJobContext::FlashTabBell,
             BackgroundJob::StopFlashTabBell(..) => BackgroundJobContext::StopFlashTabBell,
-            BackgroundJob::MobileGateTimeout(..) => BackgroundJobContext::MobileGateTimeout,
             BackgroundJob::StartNestedGuestPing(..) => BackgroundJobContext::StartNestedGuestPing,
             BackgroundJob::StopNestedGuestPing(..) => BackgroundJobContext::StopNestedGuestPing,
+            BackgroundJob::TrimAllocator => BackgroundJobContext::TrimAllocator,
             BackgroundJob::Exit => BackgroundJobContext::Exit,
         }
     }
 }
 
 static LONG_FLASH_DURATION_MS: u64 = 1000;
-static MOBILE_GATE_FALLBACK_LIFT_TIMEOUT_MS: u64 = 5000;
+static TRIM_ALLOCATOR_DEBOUNCE_MS: u64 = 2000;
+static STARTUP_TRIM_ALLOCATOR_DELAY_MS: u64 = 10000;
+
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+fn trim_allocator() {
+    unsafe {
+        libc::malloc_trim(0);
+    }
+}
+
+#[cfg(not(all(target_os = "linux", target_env = "gnu")))]
+fn trim_allocator() {}
 static FLASH_DURATION_MS: u64 = 400; // Doherty threshold
 static PLUGIN_ANIMATION_OFFSET_DURATION_MD: u64 = 500;
 static SESSION_METADATA_WRITE_INTERVAL_MS: u64 = 1000;
@@ -122,6 +146,7 @@ static UPDATE_AND_REPORT_CWDS_INTERVAL_MS: u64 = 1000;
 static DEFAULT_SERIALIZATION_INTERVAL: u64 = 60000;
 static REPAINT_DELAY_MS: u64 = 10;
 static HELP_TEXT_DEBOUNCE_DURATION: u64 = 5000;
+static COMMAND_OUTPUT_FLASH_DURATION_MS: u64 = 400;
 
 #[derive(Clone)]
 pub struct SessionScanState {
@@ -163,9 +188,12 @@ pub(crate) fn background_jobs_main(
     let last_render_request: Arc<Mutex<Option<Instant>>> = Arc::new(Mutex::new(None));
     let pending_help_text_clear: Arc<Mutex<HashMap<ClientId, Instant>>> =
         Arc::new(Mutex::new(HashMap::new()));
+    let pending_command_output_flash_clear: Arc<Mutex<HashMap<PaneId, Instant>>> =
+        Arc::new(Mutex::new(HashMap::new()));
     let mut flashing_pane_bells: HashMap<PaneId, Arc<AtomicBool>> = HashMap::new();
     let mut flashing_tab_bells: HashMap<usize, Arc<AtomicBool>> = HashMap::new();
     let mut nested_guest_pings: HashMap<PaneId, Arc<AtomicBool>> = HashMap::new();
+    let pending_allocator_trim: Arc<Mutex<Option<Instant>>> = Arc::new(Mutex::new(None));
 
     let http_client = HttpClient::builder()
         // TODO: timeout?
@@ -174,6 +202,11 @@ pub(crate) fn background_jobs_main(
         .ok();
     // We needn't do anything with the runtime, but it should exist at this point.
     let runtime = crate::global_async_runtime::get_tokio_runtime();
+
+    runtime.spawn(async move {
+        tokio::time::sleep(Duration::from_millis(STARTUP_TRIM_ALLOCATOR_DELAY_MS)).await;
+        trim_allocator();
+    });
 
     {
         let senders = bus.senders.clone();
@@ -345,6 +378,14 @@ pub(crate) fn background_jobs_main(
                         }
                     }
                 });
+            },
+            BackgroundJob::RunInBackground {
+                command,
+                args,
+                cwd,
+                env,
+            } => {
+                runtime.spawn(run_in_background(command, args, cwd, env));
             },
             BackgroundJob::WebRequest(plugin_id, client_id, url, verb, headers, body, context) => {
                 runtime.spawn({
@@ -567,6 +608,59 @@ pub(crate) fn background_jobs_main(
                     });
                 }
             },
+            BackgroundJob::ClearCommandOutputFlash { pane_id } => {
+                let should_spawn = {
+                    let mut pending = pending_command_output_flash_clear.lock().unwrap();
+                    let current_time = Instant::now();
+                    let should_spawn = !pending.contains_key(&pane_id);
+                    pending.insert(pane_id, current_time);
+                    should_spawn
+                };
+
+                if should_spawn {
+                    runtime.spawn({
+                        let senders = bus.senders.clone();
+                        let pending = pending_command_output_flash_clear.clone();
+                        let flash_duration =
+                            Duration::from_millis(COMMAND_OUTPUT_FLASH_DURATION_MS);
+                        async move {
+                            tokio::time::sleep(flash_duration).await;
+                            loop {
+                                let next_sleep_duration = {
+                                    let mut pending = pending.lock().unwrap();
+                                    match pending.get(&pane_id) {
+                                        Some(&last_flash_time) => {
+                                            let time_since_flash =
+                                                Instant::now().duration_since(last_flash_time);
+                                            if time_since_flash >= flash_duration {
+                                                pending.remove(&pane_id);
+                                                None
+                                            } else {
+                                                Some(
+                                                    flash_duration.saturating_sub(time_since_flash),
+                                                )
+                                            }
+                                        },
+                                        None => break,
+                                    }
+                                };
+
+                                match next_sleep_duration {
+                                    Some(duration) => {
+                                        tokio::time::sleep(duration).await;
+                                    },
+                                    None => {
+                                        let _ = senders.send_to_server(
+                                            ServerInstruction::ClearCommandOutputFlash(pane_id),
+                                        );
+                                        break;
+                                    },
+                                }
+                            }
+                        }
+                    });
+                }
+            },
             BackgroundJob::FlashPaneBell(pane_ids) => {
                 let is_flashing = Arc::new(AtomicBool::new(true));
                 for &pane_id in &pane_ids {
@@ -653,18 +747,44 @@ pub(crate) fn background_jobs_main(
                     flag.store(false, Ordering::SeqCst);
                 }
             },
-            BackgroundJob::MobileGateTimeout(client_id) => {
-                runtime.spawn({
-                    let senders = bus.senders.clone();
-                    async move {
-                        tokio::time::sleep(Duration::from_millis(
-                            MOBILE_GATE_FALLBACK_LIFT_TIMEOUT_MS,
-                        ))
-                        .await;
-                        let _ =
-                            senders.send_to_screen(ScreenInstruction::ForceMobileUngate(client_id));
-                    }
-                });
+            BackgroundJob::TrimAllocator => {
+                let should_spawn = {
+                    let mut pending = pending_allocator_trim.lock().unwrap();
+                    let should_spawn = pending.is_none();
+                    *pending = Some(Instant::now());
+                    should_spawn
+                };
+                if should_spawn {
+                    let pending = pending_allocator_trim.clone();
+                    runtime.spawn(async move {
+                        let debounce = Duration::from_millis(TRIM_ALLOCATOR_DEBOUNCE_MS);
+                        tokio::time::sleep(debounce).await;
+                        loop {
+                            let remaining = {
+                                let mut pending = pending.lock().unwrap();
+                                match *pending {
+                                    Some(last_request) => {
+                                        let elapsed = Instant::now().duration_since(last_request);
+                                        if elapsed >= debounce {
+                                            *pending = None;
+                                            None
+                                        } else {
+                                            Some(debounce.saturating_sub(elapsed))
+                                        }
+                                    },
+                                    None => return,
+                                }
+                            };
+                            match remaining {
+                                Some(duration) => tokio::time::sleep(duration).await,
+                                None => {
+                                    trim_allocator();
+                                    return;
+                                },
+                            }
+                        }
+                    });
+                }
             },
             BackgroundJob::Exit => {
                 for loading_plugin in loading_plugins.values() {
@@ -758,8 +878,11 @@ pub fn scan_session_list(
     sock_dir: &Path,
     session_info_cache_dir: &Path,
 ) -> (BTreeMap<String, SessionInfo>, BTreeMap<String, Duration>) {
-    let mut session_infos_on_machine =
-        read_other_live_session_states(current_session_name, sock_dir, session_info_cache_dir);
+    let mut session_infos_on_machine = zellij_utils::sessions::read_live_session_states(
+        current_session_name,
+        sock_dir,
+        session_info_cache_dir,
+    );
     for (name, info) in session_infos_on_machine.iter_mut() {
         if name == current_session_name {
             info.populate_plugin_list(current_session_plugin_list.clone());
@@ -783,48 +906,6 @@ pub fn scan_session_list_default_dirs(
         &*ZELLIJ_SOCK_DIR,
         &*ZELLIJ_SESSION_INFO_CACHE_DIR,
     )
-}
-
-fn read_other_live_session_states(
-    current_session_name: &str,
-    sock_dir: &Path,
-    session_info_cache_dir: &Path,
-) -> BTreeMap<String, SessionInfo> {
-    let mut other_session_names: Vec<(String, Duration)> = vec![];
-    let mut session_infos_on_machine = BTreeMap::new();
-    // we do this so that the session infos will be actual and we're
-    // reasonably sure their session is running
-    if let Ok(files) = fs::read_dir(sock_dir) {
-        files.for_each(|file| {
-            if let Ok(file) = file {
-                if let Ok(file_name) = file.file_name().into_string() {
-                    if is_ipc_socket(&file.file_type().unwrap()) {
-                        let creation_time = std::fs::metadata(&file.path())
-                            .ok()
-                            .and_then(|f| f.created().ok().or_else(|| f.modified().ok()))
-                            .and_then(|d| d.elapsed().ok())
-                            .unwrap_or_default();
-                        other_session_names.push((file_name, creation_time));
-                    }
-                }
-            }
-        });
-    }
-
-    for (session_name, creation_time) in other_session_names {
-        let session_cache_file_name = session_info_cache_dir
-            .join(&session_name)
-            .join("session-metadata.kdl");
-        if let Ok(raw_session_info) = fs::read_to_string(&session_cache_file_name) {
-            if let Ok(mut session_info) =
-                SessionInfo::from_string(&raw_session_info, &current_session_name)
-            {
-                session_info.creation_time = creation_time;
-                session_infos_on_machine.insert(session_name, session_info);
-            }
-        }
-    }
-    session_infos_on_machine
 }
 
 fn find_resurrectable_sessions(
@@ -1013,5 +1094,54 @@ mod tests {
         for name in ["live-a", "live-b", "live-c"] {
             assert!(!resurrectable.contains_key(name));
         }
+    }
+}
+
+async fn run_in_background(
+    command: PathBuf,
+    args: Vec<String>,
+    cwd: Option<PathBuf>,
+    env: PaneEnv,
+) {
+    let mut process = tokio::process::Command::new(&command);
+    process
+        .args(&args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped());
+    for (name, value) in env {
+        match value {
+            Some(value) => process.env(name, value),
+            None => process.env_remove(name),
+        };
+    }
+    if let Some(cwd) = cwd {
+        if cwd.is_dir() {
+            process.current_dir(cwd);
+        } else {
+            log::error!(
+                "Cannot run '{}' in '{}': not a folder",
+                command.display(),
+                cwd.display()
+            );
+        }
+    }
+    match process.output().await {
+        Ok(output) if !output.status.success() => {
+            log::error!(
+                "Background command '{}' exited with {}: {}",
+                command.display(),
+                output.status,
+                String::from_utf8_lossy(&output.stderr).trim_end()
+            );
+        },
+        Ok(_) => {},
+        Err(e) => {
+            log::error!(
+                "Failed to start background command '{}': {}",
+                command.display(),
+                e
+            );
+        },
     }
 }

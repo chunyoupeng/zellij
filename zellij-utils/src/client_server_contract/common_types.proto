@@ -89,6 +89,33 @@ message Style {
   Styling colors = 1;
   bool rounded_corners = 2;
   bool hide_session_name = 3;
+  BorderStyle border_style = 4;
+  BorderStyle floating_border_style = 5;
+}
+
+enum LineStyle {
+  LINE_STYLE_SINGLE = 0;
+  LINE_STYLE_DOUBLE = 1;
+  LINE_STYLE_HEAVY = 2;
+  LINE_STYLE_DASHED = 3;
+  LINE_STYLE_HEAVY_DASHED = 4;
+}
+
+message BorderStyle {
+  LineStyle top = 1;
+  LineStyle right = 2;
+  LineStyle bottom = 3;
+  LineStyle left = 4;
+  bool rounded_corners = 5;
+}
+
+message BorderStyleOverride {
+  optional LineStyle all = 1;
+  optional LineStyle top = 2;
+  optional LineStyle right = 3;
+  optional LineStyle bottom = 4;
+  optional LineStyle left = 5;
+  optional bool rounded_corners = 6;
 }
 
 message Styling {
@@ -135,6 +162,7 @@ enum AnsiCode {
 }
 
 message Action {
+  reserved 140;
   oneof action_type {
     QuitAction quit = 1;
     WriteAction write = 2;
@@ -232,6 +260,7 @@ message Action {
     OverrideLayoutAction override_layout = 94;
     TogglePaneBorderlessAction toggle_pane_borderless = 95;
     SetPaneBorderlessAction set_pane_borderless = 96;
+    SetPaneBorderStyleAction set_pane_border_style = 156;
     SaveSessionAction save_session = 97;
     ListPanesAction list_panes = 98;
     WriteCharsToPaneIdAction write_chars_to_pane_id = 99;
@@ -277,7 +306,6 @@ message Action {
     SetDarkThemeAction set_dark_theme = 137;
     SetLightThemeAction set_light_theme = 138;
     ToggleThemeAction toggle_theme = 139;
-    ToggleMobileModeAction toggle_mobile_mode = 140;
     FocusLastPaneAction focus_last_pane = 141;
     SetPaneFrameStyleAction set_pane_frame_style = 142;
     ToggleFocusNoUiFullscreenAction toggle_focus_no_ui_fullscreen = 143;
@@ -285,17 +313,32 @@ message Action {
     FocusHostSessionAction focus_host_session = 145;
     ToggleHostFullscreenAction toggle_host_fullscreen = 146;
     FocusGuestSessionAction focus_guest_session = 147;
-    ToggleCopyModeAction toggle_copy_mode = 148;
-    CopyModeMoveAction copy_mode_move = 149;
-    CopyModePageScrollAction copy_mode_page_scroll = 150;
-    CopyModeHalfPageScrollAction copy_mode_half_page_scroll = 151;
-    CopyModeLineStartAction copy_mode_line_start = 152;
-    CopyModeLineEndAction copy_mode_line_end = 153;
-    CopyModeWordStartAction copy_mode_word_start = 154;
-    CopyModeWordEndAction copy_mode_word_end = 155;
-    CopyModeWordBackAction copy_mode_word_back = 156;
-    CopyModeYankAction copy_mode_yank = 157;
-    CopyModeCancelAction copy_mode_cancel = 158;
+    ScrollToPreviousPromptAction scroll_to_previous_prompt = 148;
+    ScrollToNextPromptAction scroll_to_next_prompt = 149;
+    SelectCommandAtScrollPositionAction select_command_at_scroll_position = 150;
+    CopyLastCommandOutputAction copy_last_command_output = 151;
+    ApplyTiledSwapLayoutAction apply_tiled_swap_layout = 152;
+    ApplyFloatingSwapLayoutAction apply_floating_swap_layout = 153;
+    ApplyTiledSwapLayoutByTabIdAction apply_tiled_swap_layout_by_tab_id = 154;
+    ApplyFloatingSwapLayoutByTabIdAction apply_floating_swap_layout_by_tab_id = 155;
+    TogglePaneInGroupByPaneIdAction toggle_pane_in_group_by_pane_id = 157;
+    StartRenamePaneByPaneIdAction start_rename_pane_by_pane_id = 158;
+    StartRenameTabByTabIdAction start_rename_tab_by_tab_id = 159;
+    DismissInfoPopupsAction dismiss_info_popups = 160;
+    OpenContextMenuAction open_context_menu = 161;
+    MoveTabToPositionAction move_tab_to_position = 162;
+    RunInBackgroundAction run_in_background = 163;
+    ToggleCopyModeAction toggle_copy_mode = 164;
+    CopyModeMoveAction copy_mode_move = 165;
+    CopyModePageScrollAction copy_mode_page_scroll = 166;
+    CopyModeHalfPageScrollAction copy_mode_half_page_scroll = 167;
+    CopyModeLineStartAction copy_mode_line_start = 168;
+    CopyModeLineEndAction copy_mode_line_end = 169;
+    CopyModeWordStartAction copy_mode_word_start = 170;
+    CopyModeWordEndAction copy_mode_word_end = 171;
+    CopyModeWordBackAction copy_mode_word_back = 172;
+    CopyModeYankAction copy_mode_yank = 173;
+    CopyModeCancelAction copy_mode_cancel = 174;
   }
 }
 
@@ -321,6 +364,10 @@ message ScrollUpAction {}
 message ScrollDownAction {}
 message ScrollToBottomAction {}
 message ScrollToTopAction {}
+message ScrollToPreviousPromptAction {}
+message ScrollToNextPromptAction {}
+message SelectCommandAtScrollPositionAction {}
+message CopyLastCommandOutputAction {}
 message PageScrollUpAction {}
 message PageScrollDownAction {}
 message HalfPageScrollUpAction {}
@@ -376,9 +423,10 @@ message CopyModeCancelAction {}
 message ConfirmAction {}
 message DenyAction {}
 message ToggleMouseModeAction {}
-message ToggleMobileModeAction {}
 message PreviousSwapLayoutAction {}
 message NextSwapLayoutAction {}
+message ApplyTiledSwapLayoutAction { string name = 1; }
+message ApplyFloatingSwapLayoutAction { string name = 1; }
 message TabLayoutInfo {
   uint32 tab_index = 1;
   optional string tab_name = 2;
@@ -526,6 +574,7 @@ message NewTiledPaneAction {
   optional bool borderless = 8;
   optional uint32 tab_id = 9;
   bool no_focus = 10;
+  optional BorderStyleOverride border_style = 11;
 }
 
 message NewInPlacePaneAction {
@@ -593,6 +642,10 @@ message RunAction {
   RunCommandAction command = 1;
   bool near_current_pane = 2;
   bool no_focus = 3;
+}
+
+message RunInBackgroundAction {
+  RunCommandAction command = 1;
 }
 
 message LaunchOrFocusPluginAction {
@@ -733,6 +786,8 @@ message CliPipeAction {
   optional bool in_place = 10;
   optional string cwd = 11;
   optional string pane_title = 12;
+  optional string popup = 13;
+  bool popup_no_focus = 14;
 }
 
 message KeybindPipeAction {
@@ -772,6 +827,11 @@ message SetPaneColorAction {
   PaneId pane_id = 1;
   optional string fg = 2;
   optional string bg = 3;
+}
+
+message SetPaneBorderStyleAction {
+  PaneId pane_id = 1;
+  BorderStyleOverride border_style = 2;
 }
 
 // Supporting enums and messages
@@ -831,6 +891,8 @@ message CliAssets {
   optional uint32 max_panes = 9;
   bool force_run_layout_commands = 10;
   optional string cwd = 11;
+  map<string, string> host_terminal_env = 12;
+  repeated CommandOrPlugin initial_panes = 13;
 }
 
 message LayoutInfo {
@@ -893,22 +955,26 @@ message NewPanePlacement {
 
 message NoPreferencePlacement {
   optional bool borderless = 1;
+  optional BorderStyleOverride border_style = 2;
 }
 
 message TiledPlacement {
   optional Direction direction = 1;
   optional bool borderless = 2;
+  optional BorderStyleOverride border_style = 3;
 }
 
 message StackedPlacement {
   optional PaneId pane_id_to_stack_under = 1;
   optional bool borderless = 2;
+  optional BorderStyleOverride border_style = 3;
 }
 
 message NewPanePlacementInPlace {
   optional PaneId pane_id_to_replace = 1;
   bool close_replaced_pane = 2;
   optional bool borderless = 3;
+  optional BorderStyleOverride border_style = 4;
 }
 
 message PaneIdWithPlugin {
@@ -945,6 +1011,7 @@ message FloatingPaneCoordinates {
   optional FloatingCoordinate height = 4;
   optional bool pinned = 5;
   optional bool borderless = 6;
+  optional BorderStyleOverride border_style = 7;
 }
 
 message FloatingCoordinate {
@@ -981,6 +1048,7 @@ message TiledPaneLayout {
   optional string pane_initial_contents = 13;
   optional string default_fg = 14;
   optional string default_bg = 15;
+  optional BorderStyleOverride border_style = 16;
   // NOTE: run_instructions_to_ignore is not represented here because it's a field used only inside the server itself and not part of the server/client contract
 }
 
@@ -999,6 +1067,7 @@ message FloatingPaneLayout {
   optional bool borderless = 12;
   optional string default_fg = 13;
   optional string default_bg = 14;
+  optional BorderStyleOverride border_style = 15;
 }
 
 message SwapTiledLayout {
@@ -1232,14 +1301,26 @@ message Options {
   optional bool mouse_click_through = 45;
   optional string theme_dark = 46;
   optional string theme_light = 47;
-  optional MobileLayout mobile_layout = 48;
-  optional uint32 mobile_threshold_cols = 49;
-  optional uint32 mobile_threshold_rows = 50;
+  reserved 48, 49, 50;
   optional string pane_frame_style = 51;
   optional bool stacked_pane_list = 52;
   optional NestedSessionHandling nested_session_handling = 53;
   optional bool mouse_scroll_resize = 54;
   optional bool support_kitty_graphics_protocol = 55;
+  optional bool osc133_command_selection = 56;
+  optional string word_separators = 57;
+  optional bool dangerously_enable_paste_buffer_read = 58;
+  optional bool mouse_hover_tips = 59;
+  optional string host_notification_protocol = 67;
+  optional bool scroll_mode_sync = 68;
+  optional ThemeHue explicit_theme_hue = 69;
+  optional string keybinds_dir = 70;
+  optional string keybinds_preset = 71;
+  optional string keybinds_primary = 72;
+  optional string keybinds_secondary = 73;
+  optional string keybinds_unlock = 74;
+  optional bool context_menu_enabled = 75;
+  optional bool dangerously_allow_web_serving_without_a_certificate = 76;
 }
 
 enum OnForceClose {
@@ -1267,13 +1348,6 @@ enum WebSharing {
   WEB_SHARING_DISABLED = 3;
 }
 
-enum MobileLayout {
-  MOBILE_LAYOUT_UNSPECIFIED = 0;
-  MOBILE_LAYOUT_WEB = 1;
-  MOBILE_LAYOUT_ALWAYS = 2;
-  MOBILE_LAYOUT_NEVER = 3;
-}
-
 enum NestedSessionHandling {
   NESTED_SESSION_HANDLING_UNSPECIFIED = 0;
   NESTED_SESSION_HANDLING_ASK = 1;
@@ -1281,6 +1355,13 @@ enum NestedSessionHandling {
   NESTED_SESSION_HANDLING_DESCEND = 3;
   NESTED_SESSION_HANDLING_NEVER = 4;
 }
+
+enum ThemeHue {
+  THEME_HUE_UNSPECIFIED = 0;
+  THEME_HUE_DARK = 1;
+  THEME_HUE_LIGHT = 2;
+}
+
 
 // Pane-targeting action messages
 message ScrollUpByPaneIdAction { PaneId pane_id = 1; }
@@ -1314,4 +1395,12 @@ message ToggleActiveSyncTabByTabIdAction { uint64 id = 1; }
 message ToggleFloatingPanesByTabIdAction { uint64 id = 1; }
 message PreviousSwapLayoutByTabIdAction { uint64 id = 1; }
 message NextSwapLayoutByTabIdAction { uint64 id = 1; }
+message ApplyTiledSwapLayoutByTabIdAction { uint64 id = 1; string name = 2; }
+message ApplyFloatingSwapLayoutByTabIdAction { uint64 id = 1; string name = 2; }
 message MoveTabByTabIdAction { uint64 id = 1; Direction direction = 2; }
+message MoveTabToPositionAction { uint64 id = 1; uint64 position = 2; }
+message TogglePaneInGroupByPaneIdAction { PaneId pane_id = 1; }
+message StartRenamePaneByPaneIdAction { PaneId pane_id = 1; }
+message StartRenameTabByTabIdAction { uint64 id = 1; }
+message DismissInfoPopupsAction {}
+message OpenContextMenuAction {}

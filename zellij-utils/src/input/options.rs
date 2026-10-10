@@ -1,6 +1,6 @@
 //! Handles cli and configuration options
 use crate::cli::Command;
-use crate::data::{InputMode, WebSharing};
+use crate::data::{InputMode, ThemeHue, WebSharing};
 use clap::{Args, ValueEnum};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -8,71 +8,14 @@ use std::str::FromStr;
 
 use std::net::IpAddr;
 
+pub const DEFAULT_WORD_SEPARATORS: &str = "[]{}<>()";
+
 #[derive(Copy, Clone, Debug, PartialEq, Deserialize, Serialize, ValueEnum)]
 pub enum OnForceClose {
     #[serde(alias = "quit")]
     Quit,
     #[serde(alias = "detach")]
     Detach,
-}
-
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Deserialize, Serialize, ValueEnum)]
-pub enum MobileLayoutConfiguration {
-    #[serde(alias = "web")]
-    Web,
-    #[serde(alias = "always")]
-    Always,
-    #[serde(alias = "never")]
-    Never,
-}
-
-impl Default for MobileLayoutConfiguration {
-    fn default() -> Self {
-        Self::Web
-    }
-}
-
-impl FromStr for MobileLayoutConfiguration {
-    type Err = String;
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "Web" | "web" => Ok(Self::Web),
-            "Always" | "always" => Ok(Self::Always),
-            "Never" | "never" => Ok(Self::Never),
-            _ => Err(format!("No such mobile_layout: {}", s)),
-        }
-    }
-}
-
-impl MobileLayoutConfiguration {
-    pub fn should_route_to_mobile(
-        self,
-        is_web_client: bool,
-        viewport_cols: usize,
-        viewport_rows: usize,
-        threshold_cols: u16,
-        threshold_rows: u16,
-    ) -> bool {
-        let cols_reported = viewport_cols > 0;
-        let rows_reported = viewport_rows > 0;
-        let cols_match =
-            cols_reported && (threshold_cols == 0 || viewport_cols <= threshold_cols as usize);
-        let rows_match =
-            rows_reported && (threshold_rows == 0 || viewport_rows <= threshold_rows as usize);
-        let size_match = cols_match || rows_match;
-        match self {
-            MobileLayoutConfiguration::Always => size_match,
-            MobileLayoutConfiguration::Never => false,
-            MobileLayoutConfiguration::Web => is_web_client && size_match,
-        }
-    }
-
-    pub fn may_route_web_client_to_mobile(self) -> bool {
-        matches!(
-            self,
-            MobileLayoutConfiguration::Web | MobileLayoutConfiguration::Always
-        )
-    }
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Deserialize, Serialize, ValueEnum)]
@@ -178,7 +121,7 @@ impl FromStr for PaneFrameStyle {
 /// Options that can be set either through the config file,
 /// or cli flags - cli flags should take precedence over the config file
 /// TODO: In order to correctly parse boolean flags, this is currently split
-/// into Options and CliOptions, this could be a good canditate for a macro
+/// into Options and CliOptions, this could be a good candidate for a macro
 pub struct Options {
     /// Allow plugins to use a more simplified layout
     /// that is compatible with more fonts (true or false)
@@ -198,6 +141,12 @@ pub struct Options {
     /// is missing the static `theme` remains authoritative.
     #[clap(long, value_parser)]
     pub theme_light: Option<String>,
+    /// Pin the session to a dark or light appearance ("dark" or "light"),
+    /// resolved before the first render and kept authoritative over ambient
+    /// host terminal reports (CSI 2031 / DSR 997). When unset, the session
+    /// follows the host terminal.
+    #[clap(long, value_enum, hide_possible_values = true, value_parser)]
+    pub explicit_theme_hue: Option<ThemeHue>,
     /// Set the default mode
     #[clap(long, value_enum, hide_possible_values = true, value_parser)]
     pub default_mode: Option<InputMode>,
@@ -218,6 +167,41 @@ pub struct Options {
     /// subdirectory of config dir
     #[clap(long, value_parser)]
     pub theme_dir: Option<PathBuf>,
+    #[clap(
+        long,
+        value_parser,
+        help = "Set the keybinds_dir, defaults to subdirectory of config dir"
+    )]
+    #[serde(default)]
+    pub keybinds_dir: Option<PathBuf>,
+    #[clap(
+        long,
+        value_parser,
+        help = "Use this keybinding preset for this session: a name from the keybinds folder, a built-in preset, or a path to a preset file"
+    )]
+    #[serde(default)]
+    pub keybinds_preset: Option<String>,
+    #[clap(
+        long,
+        value_parser,
+        help = "The primary leader key for the keybinding preset (for example \"Ctrl\")"
+    )]
+    #[serde(default)]
+    pub keybinds_primary: Option<String>,
+    #[clap(
+        long,
+        value_parser,
+        help = "The secondary leader key for the keybinding preset (for example \"Alt\")"
+    )]
+    #[serde(default)]
+    pub keybinds_secondary: Option<String>,
+    #[clap(
+        long,
+        value_parser,
+        help = "The unlock key for the keybinding preset (for example \"Ctrl g\")"
+    )]
+    #[serde(default)]
+    pub keybinds_unlock: Option<String>,
     #[clap(long, value_parser)]
     #[serde(default)]
     /// Set the handling of mouse events (true or false)
@@ -407,11 +391,23 @@ pub struct Options {
     #[serde(default)]
     pub mouse_scroll_resize: Option<bool>,
 
+    /// Whether scrolling a pane implicitly enters (and leaving the scroll implicitly exits) Scroll mode
+    /// default is true
+    #[clap(long, value_parser)]
+    #[serde(default)]
+    pub scroll_mode_sync: Option<bool>,
+
     /// Whether to enable mouse hover visual effects (frame highlight and help text)
     /// default is true
     #[clap(long, value_parser)]
     #[serde(default)]
     pub mouse_hover_effects: Option<bool>,
+
+    /// Whether to show mouse hover help-text tips (resize help and group shortcuts)
+    /// default is true
+    #[clap(long, value_parser)]
+    #[serde(default)]
+    pub mouse_hover_tips: Option<bool>,
 
     /// Whether to show visual bell indicators (pane/tab frame flash and [!] suffix)
     /// default is true
@@ -431,6 +427,32 @@ pub struct Options {
     #[serde(default)]
     pub mouse_click_through: Option<bool>,
 
+    #[clap(
+        long,
+        value_parser,
+        help = "Whether a right click opens the right-click menu (true or false), default is true"
+    )]
+    #[serde(default)]
+    pub context_menu_enabled: Option<bool>,
+
+    /// Whether triple-clicking inside shell-marked (OSC 133) command output selects the command
+    /// and its output rather than the logical line
+    /// default is true
+    #[clap(long, value_parser)]
+    #[serde(default)]
+    pub osc133_command_selection: Option<bool>,
+
+    /// Characters that terminate a word when double-clicking to select it, in addition to
+    /// whitespace (which is always a separator)
+    /// default is "[]{}<>()"
+    #[clap(long, value_parser)]
+    #[serde(default)]
+    pub word_separators: Option<String>,
+
+    #[clap(long, value_parser)]
+    #[serde(default)]
+    pub host_notification_protocol: Option<HostNotificationProtocol>,
+
     // these are intentionally excluded from the CLI options as they must be specified in the
     // configuration file
     pub web_server_ip: Option<IpAddr>,
@@ -438,6 +460,7 @@ pub struct Options {
     pub web_server_cert: Option<PathBuf>,
     pub web_server_key: Option<PathBuf>,
     pub enforce_https_for_localhost: Option<bool>,
+    pub dangerously_allow_web_serving_without_a_certificate: Option<bool>,
     /// A command to run after the discovery of running commands when serializing, for the purpose
     /// of manipulating the command (eg. with a regex) before it gets serialized
     #[clap(long, value_parser)]
@@ -451,26 +474,15 @@ pub struct Options {
     #[clap(long)]
     pub client_async_worker_tasks: Option<usize>,
 
-    /// When a newly-attaching client should land in the mobile UI plugin (web, always, never)
-    #[clap(long, value_enum, hide_possible_values = true, value_parser)]
-    #[serde(default)]
-    pub mobile_layout: Option<MobileLayoutConfiguration>,
-
-    /// Column breakpoint for mobile_layout (0 to always match)
-    #[clap(long, value_parser)]
-    #[serde(default)]
-    pub mobile_threshold_cols: Option<u16>,
-
-    /// Row breakpoint for mobile_layout (0 to always match)
-    #[clap(long, value_parser)]
-    #[serde(default)]
-    pub mobile_threshold_rows: Option<u16>,
-
     /// How to handle a nested Zellij session detected inside a pane
     /// (ask, fullscreen, descend, never)
     #[clap(long, value_enum, hide_possible_values = true, value_parser)]
     #[serde(default)]
     pub nested_session_handling: Option<NestedSessionHandling>,
+
+    #[clap(long, value_parser)]
+    #[serde(default)]
+    pub dangerously_enable_paste_buffer_read: Option<bool>,
 }
 
 #[derive(ValueEnum, Deserialize, Serialize, Debug, Clone, Copy, PartialEq)]
@@ -484,6 +496,52 @@ pub enum Clipboard {
 impl Default for Clipboard {
     fn default() -> Self {
         Self::System
+    }
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Deserialize, Serialize, ValueEnum)]
+pub enum HostNotificationProtocol {
+    #[serde(alias = "auto")]
+    Auto,
+    #[serde(alias = "osc9")]
+    Osc9,
+    #[serde(alias = "osc99")]
+    Osc99,
+    #[serde(alias = "bell")]
+    Bell,
+    #[serde(alias = "off")]
+    Off,
+}
+
+impl Default for HostNotificationProtocol {
+    fn default() -> Self {
+        Self::Auto
+    }
+}
+
+impl HostNotificationProtocol {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Osc9 => "osc9",
+            Self::Osc99 => "osc99",
+            Self::Bell => "bell",
+            Self::Off => "off",
+        }
+    }
+}
+
+impl FromStr for HostNotificationProtocol {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "Auto" | "auto" => Ok(Self::Auto),
+            "Osc9" | "osc9" => Ok(Self::Osc9),
+            "Osc99" | "osc99" => Ok(Self::Osc99),
+            "Bell" | "bell" => Ok(Self::Bell),
+            "Off" | "off" => Ok(Self::Off),
+            _ => Err(format!("No such host_notification_protocol: {}", s)),
+        }
     }
 }
 
@@ -522,9 +580,23 @@ impl Options {
         let default_layout = other.default_layout.or_else(|| self.default_layout.clone());
         let layout_dir = other.layout_dir.or_else(|| self.layout_dir.clone());
         let theme_dir = other.theme_dir.or_else(|| self.theme_dir.clone());
+        let keybinds_dir = other.keybinds_dir.or_else(|| self.keybinds_dir.clone());
+        let keybinds_preset = other
+            .keybinds_preset
+            .or_else(|| self.keybinds_preset.clone());
+        let keybinds_primary = other
+            .keybinds_primary
+            .or_else(|| self.keybinds_primary.clone());
+        let keybinds_secondary = other
+            .keybinds_secondary
+            .or_else(|| self.keybinds_secondary.clone());
+        let keybinds_unlock = other
+            .keybinds_unlock
+            .or_else(|| self.keybinds_unlock.clone());
         let theme = other.theme.or_else(|| self.theme.clone());
         let theme_dark = other.theme_dark.or_else(|| self.theme_dark.clone());
         let theme_light = other.theme_light.or_else(|| self.theme_light.clone());
+        let explicit_theme_hue = other.explicit_theme_hue.or(self.explicit_theme_hue);
         let on_force_close = other.on_force_close.or(self.on_force_close);
         let scroll_buffer_size = other.scroll_buffer_size.or(self.scroll_buffer_size);
         let copy_command = other.copy_command.or_else(|| self.copy_command.clone());
@@ -568,10 +640,22 @@ impl Options {
         let show_release_notes = other.show_release_notes.or(self.show_release_notes);
         let advanced_mouse_actions = other.advanced_mouse_actions.or(self.advanced_mouse_actions);
         let mouse_scroll_resize = other.mouse_scroll_resize.or(self.mouse_scroll_resize);
+        let scroll_mode_sync = other.scroll_mode_sync.or(self.scroll_mode_sync);
         let mouse_hover_effects = other.mouse_hover_effects.or(self.mouse_hover_effects);
+        let mouse_hover_tips = other.mouse_hover_tips.or(self.mouse_hover_tips);
         let visual_bell = other.visual_bell.or(self.visual_bell);
         let focus_follows_mouse = other.focus_follows_mouse.or(self.focus_follows_mouse);
         let mouse_click_through = other.mouse_click_through.or(self.mouse_click_through);
+        let context_menu_enabled = other.context_menu_enabled.or(self.context_menu_enabled);
+        let osc133_command_selection = other
+            .osc133_command_selection
+            .or(self.osc133_command_selection);
+        let word_separators = other
+            .word_separators
+            .or_else(|| self.word_separators.clone());
+        let host_notification_protocol = other
+            .host_notification_protocol
+            .or(self.host_notification_protocol);
         let web_server_ip = other.web_server_ip.or(self.web_server_ip);
         let web_server_port = other.web_server_port.or(self.web_server_port);
         let web_server_cert = other
@@ -581,30 +665,39 @@ impl Options {
         let enforce_https_for_localhost = other
             .enforce_https_for_localhost
             .or(self.enforce_https_for_localhost);
+        let dangerously_allow_web_serving_without_a_certificate = other
+            .dangerously_allow_web_serving_without_a_certificate
+            .or(self.dangerously_allow_web_serving_without_a_certificate);
         let post_command_discovery_hook = other
             .post_command_discovery_hook
             .or(self.post_command_discovery_hook.clone());
         let client_async_worker_tasks = other
             .client_async_worker_tasks
             .or(self.client_async_worker_tasks);
-        let mobile_layout = other.mobile_layout.or(self.mobile_layout);
-        let mobile_threshold_cols = other.mobile_threshold_cols.or(self.mobile_threshold_cols);
-        let mobile_threshold_rows = other.mobile_threshold_rows.or(self.mobile_threshold_rows);
         let nested_session_handling = other
             .nested_session_handling
             .or(self.nested_session_handling);
+        let dangerously_enable_paste_buffer_read = other
+            .dangerously_enable_paste_buffer_read
+            .or(self.dangerously_enable_paste_buffer_read);
 
         Options {
             simplified_ui,
             theme,
             theme_dark,
             theme_light,
+            explicit_theme_hue,
             default_mode,
             default_shell,
             default_cwd,
             default_layout,
             layout_dir,
             theme_dir,
+            keybinds_dir,
+            keybinds_preset,
+            keybinds_primary,
+            keybinds_secondary,
+            keybinds_unlock,
             mouse_mode,
             pane_frames,
             pane_frame_style,
@@ -637,21 +730,26 @@ impl Options {
             show_release_notes,
             advanced_mouse_actions,
             mouse_scroll_resize,
+            scroll_mode_sync,
             mouse_hover_effects,
+            mouse_hover_tips,
             visual_bell,
             focus_follows_mouse,
             mouse_click_through,
+            context_menu_enabled,
+            osc133_command_selection,
+            word_separators,
+            host_notification_protocol,
             web_server_ip,
             web_server_port,
             web_server_cert,
             web_server_key,
             enforce_https_for_localhost,
+            dangerously_allow_web_serving_without_a_certificate,
             post_command_discovery_hook,
             client_async_worker_tasks,
-            mobile_layout,
-            mobile_threshold_cols,
-            mobile_threshold_rows,
             nested_session_handling,
+            dangerously_enable_paste_buffer_read,
         }
     }
 
@@ -687,9 +785,23 @@ impl Options {
         let default_layout = other.default_layout.or_else(|| self.default_layout.clone());
         let layout_dir = other.layout_dir.or_else(|| self.layout_dir.clone());
         let theme_dir = other.theme_dir.or_else(|| self.theme_dir.clone());
+        let keybinds_dir = other.keybinds_dir.or_else(|| self.keybinds_dir.clone());
+        let keybinds_preset = other
+            .keybinds_preset
+            .or_else(|| self.keybinds_preset.clone());
+        let keybinds_primary = other
+            .keybinds_primary
+            .or_else(|| self.keybinds_primary.clone());
+        let keybinds_secondary = other
+            .keybinds_secondary
+            .or_else(|| self.keybinds_secondary.clone());
+        let keybinds_unlock = other
+            .keybinds_unlock
+            .or_else(|| self.keybinds_unlock.clone());
         let theme = other.theme.or_else(|| self.theme.clone());
         let theme_dark = other.theme_dark.or_else(|| self.theme_dark.clone());
         let theme_light = other.theme_light.or_else(|| self.theme_light.clone());
+        let explicit_theme_hue = other.explicit_theme_hue.or(self.explicit_theme_hue);
         let on_force_close = other.on_force_close.or(self.on_force_close);
         let scroll_buffer_size = other.scroll_buffer_size.or(self.scroll_buffer_size);
         let copy_command = other.copy_command.or_else(|| self.copy_command.clone());
@@ -729,10 +841,22 @@ impl Options {
         let show_release_notes = other.show_release_notes.or(self.show_release_notes);
         let advanced_mouse_actions = other.advanced_mouse_actions.or(self.advanced_mouse_actions);
         let mouse_scroll_resize = other.mouse_scroll_resize.or(self.mouse_scroll_resize);
+        let scroll_mode_sync = other.scroll_mode_sync.or(self.scroll_mode_sync);
         let mouse_hover_effects = other.mouse_hover_effects.or(self.mouse_hover_effects);
+        let mouse_hover_tips = other.mouse_hover_tips.or(self.mouse_hover_tips);
         let visual_bell = other.visual_bell.or(self.visual_bell);
         let focus_follows_mouse = merge_bool(other.focus_follows_mouse, self.focus_follows_mouse);
         let mouse_click_through = merge_bool(other.mouse_click_through, self.mouse_click_through);
+        let context_menu_enabled = other.context_menu_enabled.or(self.context_menu_enabled);
+        let osc133_command_selection = other
+            .osc133_command_selection
+            .or(self.osc133_command_selection);
+        let word_separators = other
+            .word_separators
+            .or_else(|| self.word_separators.clone());
+        let host_notification_protocol = other
+            .host_notification_protocol
+            .or(self.host_notification_protocol);
         let web_server_ip = other.web_server_ip.or(self.web_server_ip);
         let web_server_port = other.web_server_port.or(self.web_server_port);
         let web_server_cert = other
@@ -742,30 +866,39 @@ impl Options {
         let enforce_https_for_localhost = other
             .enforce_https_for_localhost
             .or(self.enforce_https_for_localhost);
+        let dangerously_allow_web_serving_without_a_certificate = other
+            .dangerously_allow_web_serving_without_a_certificate
+            .or(self.dangerously_allow_web_serving_without_a_certificate);
         let post_command_discovery_hook = other
             .post_command_discovery_hook
             .or_else(|| self.post_command_discovery_hook.clone());
         let client_async_worker_tasks = other
             .client_async_worker_tasks
             .or(self.client_async_worker_tasks);
-        let mobile_layout = other.mobile_layout.or(self.mobile_layout);
-        let mobile_threshold_cols = other.mobile_threshold_cols.or(self.mobile_threshold_cols);
-        let mobile_threshold_rows = other.mobile_threshold_rows.or(self.mobile_threshold_rows);
         let nested_session_handling = other
             .nested_session_handling
             .or(self.nested_session_handling);
+        let dangerously_enable_paste_buffer_read = other
+            .dangerously_enable_paste_buffer_read
+            .or(self.dangerously_enable_paste_buffer_read);
 
         Options {
             simplified_ui,
             theme,
             theme_dark,
             theme_light,
+            explicit_theme_hue,
             default_mode,
             default_shell,
             default_cwd,
             default_layout,
             layout_dir,
             theme_dir,
+            keybinds_dir,
+            keybinds_preset,
+            keybinds_primary,
+            keybinds_secondary,
+            keybinds_unlock,
             mouse_mode,
             pane_frames,
             pane_frame_style,
@@ -798,21 +931,26 @@ impl Options {
             show_release_notes,
             advanced_mouse_actions,
             mouse_scroll_resize,
+            scroll_mode_sync,
             mouse_hover_effects,
+            mouse_hover_tips,
             visual_bell,
             focus_follows_mouse,
             mouse_click_through,
+            context_menu_enabled,
+            osc133_command_selection,
+            word_separators,
+            host_notification_protocol,
             web_server_ip,
             web_server_port,
             web_server_cert,
             web_server_key,
             enforce_https_for_localhost,
+            dangerously_allow_web_serving_without_a_certificate,
             post_command_discovery_hook,
             client_async_worker_tasks,
-            mobile_layout,
-            mobile_threshold_cols,
-            mobile_threshold_rows,
             nested_session_handling,
+            dangerously_enable_paste_buffer_read,
         }
     }
 
@@ -828,11 +966,6 @@ impl Options {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    const SMALL: (usize, usize) = (40, 20);
-    const WIDE_SHORT: (usize, usize) = (200, 20);
-    const TALL_NARROW: (usize, usize) = (40, 200);
-    const LARGE: (usize, usize) = (200, 200);
 
     #[test]
     fn pane_frame_style_from_str_accepts_all_variants() {
@@ -855,196 +988,130 @@ mod tests {
         assert!("bogus".parse::<PaneFrameStyle>().is_err());
     }
 
-    fn route(
-        layout: MobileLayoutConfiguration,
-        is_web: bool,
-        viewport: (usize, usize),
-        thresholds: (u16, u16),
-    ) -> bool {
-        layout.should_route_to_mobile(is_web, viewport.0, viewport.1, thresholds.0, thresholds.1)
+    #[test]
+    fn host_notification_protocol_from_str_accepts_all_variants() {
+        assert_eq!(
+            "auto".parse::<HostNotificationProtocol>().unwrap(),
+            HostNotificationProtocol::Auto
+        );
+        assert_eq!(
+            "osc9".parse::<HostNotificationProtocol>().unwrap(),
+            HostNotificationProtocol::Osc9
+        );
+        assert_eq!(
+            "osc99".parse::<HostNotificationProtocol>().unwrap(),
+            HostNotificationProtocol::Osc99
+        );
+        assert_eq!(
+            "bell".parse::<HostNotificationProtocol>().unwrap(),
+            HostNotificationProtocol::Bell
+        );
+        assert_eq!(
+            "off".parse::<HostNotificationProtocol>().unwrap(),
+            HostNotificationProtocol::Off
+        );
+        assert!("bogus".parse::<HostNotificationProtocol>().is_err());
     }
 
     #[test]
-    fn never_never_routes_to_mobile() {
-        for &is_web in &[true, false] {
-            for &viewport in &[SMALL, WIDE_SHORT, TALL_NARROW, LARGE] {
-                for &thresholds in &[(60, 30), (0, 0), (0, 30), (60, 0)] {
-                    assert!(
-                        !route(MobileLayoutConfiguration::Never, is_web, viewport, thresholds),
-                        "Never must never route (is_web={is_web} viewport={viewport:?} thresholds={thresholds:?})",
-                    );
-                }
-            }
+    fn every_host_notification_protocol_variant_stringifies_back_to_itself() {
+        for variant in [
+            HostNotificationProtocol::Auto,
+            HostNotificationProtocol::Osc9,
+            HostNotificationProtocol::Osc99,
+            HostNotificationProtocol::Bell,
+            HostNotificationProtocol::Off,
+        ] {
+            assert_eq!(
+                variant
+                    .as_str()
+                    .parse::<HostNotificationProtocol>()
+                    .unwrap(),
+                variant
+            );
         }
     }
 
     #[test]
-    fn web_requires_web_client() {
-        assert!(route(MobileLayoutConfiguration::Web, true, SMALL, (60, 30)));
-        assert!(!route(
-            MobileLayoutConfiguration::Web,
-            false,
-            SMALL,
-            (60, 30)
-        ));
-    }
-
-    #[test]
-    fn web_respects_size_in_either_dimension() {
-        assert!(route(
-            MobileLayoutConfiguration::Web,
-            true,
-            TALL_NARROW,
-            (60, 30)
-        ));
-        assert!(route(
-            MobileLayoutConfiguration::Web,
-            true,
-            WIDE_SHORT,
-            (60, 30)
-        ));
-        assert!(!route(
-            MobileLayoutConfiguration::Web,
-            true,
-            LARGE,
-            (60, 30)
-        ));
-    }
-
-    #[test]
-    fn always_routes_any_client_on_size_match() {
-        assert!(route(
-            MobileLayoutConfiguration::Always,
-            true,
-            SMALL,
-            (60, 30)
-        ));
-        assert!(route(
-            MobileLayoutConfiguration::Always,
-            false,
-            SMALL,
-            (60, 30)
-        ));
-        assert!(!route(
-            MobileLayoutConfiguration::Always,
-            true,
-            LARGE,
-            (60, 30)
-        ));
-        assert!(!route(
-            MobileLayoutConfiguration::Always,
-            false,
-            LARGE,
-            (60, 30)
-        ));
-    }
-
-    #[test]
-    fn zero_threshold_makes_dimension_unconditional() {
-        assert!(route(
-            MobileLayoutConfiguration::Always,
-            false,
-            LARGE,
-            (0, 30)
-        ));
-        assert!(route(
-            MobileLayoutConfiguration::Always,
-            false,
-            LARGE,
-            (60, 0)
-        ));
-        assert!(route(
-            MobileLayoutConfiguration::Always,
-            false,
-            LARGE,
-            (0, 0)
-        ));
-        assert!(route(MobileLayoutConfiguration::Web, true, LARGE, (0, 0)));
-        assert!(!route(MobileLayoutConfiguration::Web, false, LARGE, (0, 0)));
-    }
-
-    #[test]
-    fn zero_viewport_is_treated_as_unknown() {
-        assert!(!route(
-            MobileLayoutConfiguration::Always,
-            true,
-            (0, 0),
-            (60, 30)
-        ));
-        assert!(!route(
-            MobileLayoutConfiguration::Web,
-            true,
-            (0, 0),
-            (60, 30)
-        ));
-        assert!(!route(
-            MobileLayoutConfiguration::Always,
-            true,
-            (0, 0),
-            (0, 0)
-        ));
-        assert!(route(
-            MobileLayoutConfiguration::Always,
-            true,
-            (40, 0),
-            (60, 30)
-        ));
-        assert!(route(
-            MobileLayoutConfiguration::Always,
-            true,
-            (0, 20),
-            (60, 30)
-        ));
-    }
-
-    #[test]
-    fn boundary_inclusive_at_threshold() {
-        assert!(route(
-            MobileLayoutConfiguration::Always,
-            false,
-            (60, 200),
-            (60, 30)
-        ));
-        assert!(route(
-            MobileLayoutConfiguration::Always,
-            false,
-            (200, 30),
-            (60, 30)
-        ));
-        assert!(!route(
-            MobileLayoutConfiguration::Always,
-            false,
-            (61, 31),
-            (60, 30)
-        ));
-    }
-
-    #[test]
-    fn from_str_accepts_canonical_and_lowercase() {
+    fn the_host_notification_protocol_defaults_to_auto() {
         assert_eq!(
-            "web".parse::<MobileLayoutConfiguration>(),
-            Ok(MobileLayoutConfiguration::Web)
+            HostNotificationProtocol::default(),
+            HostNotificationProtocol::Auto
+        );
+    }
+
+    #[test]
+    fn a_configured_host_notification_protocol_is_overridden_by_the_merged_in_one() {
+        let config = Options {
+            host_notification_protocol: Some(HostNotificationProtocol::Osc9),
+            ..Default::default()
+        };
+        let layout = Options {
+            host_notification_protocol: Some(HostNotificationProtocol::Bell),
+            ..Default::default()
+        };
+        assert_eq!(
+            config.merge(layout).host_notification_protocol,
+            Some(HostNotificationProtocol::Bell)
+        );
+    }
+
+    #[test]
+    fn an_unset_host_notification_protocol_does_not_clobber_the_configured_one() {
+        let config = Options {
+            host_notification_protocol: Some(HostNotificationProtocol::Osc9),
+            ..Default::default()
+        };
+        assert_eq!(
+            config.merge(Options::default()).host_notification_protocol,
+            Some(HostNotificationProtocol::Osc9)
+        );
+    }
+
+    #[test]
+    fn a_host_notification_protocol_unset_everywhere_stays_unset() {
+        assert_eq!(
+            Options::default()
+                .merge(Options::default())
+                .host_notification_protocol,
+            None
         );
         assert_eq!(
-            "Web".parse::<MobileLayoutConfiguration>(),
-            Ok(MobileLayoutConfiguration::Web)
+            Options::default()
+                .merge_from_cli(Options::default())
+                .host_notification_protocol,
+            None
         );
-        assert_eq!(
-            "always".parse::<MobileLayoutConfiguration>(),
-            Ok(MobileLayoutConfiguration::Always)
-        );
-        assert_eq!(
-            "never".parse::<MobileLayoutConfiguration>(),
-            Ok(MobileLayoutConfiguration::Never)
-        );
-        assert!("auto".parse::<MobileLayoutConfiguration>().is_err());
     }
 
     #[test]
-    fn default_is_web() {
+    fn a_host_notification_protocol_given_on_the_command_line_wins() {
+        let config = Options {
+            host_notification_protocol: Some(HostNotificationProtocol::Osc9),
+            ..Default::default()
+        };
+        let cli = Options {
+            host_notification_protocol: Some(HostNotificationProtocol::Off),
+            ..Default::default()
+        };
         assert_eq!(
-            MobileLayoutConfiguration::default(),
-            MobileLayoutConfiguration::Web
+            config.merge_from_cli(cli).host_notification_protocol,
+            Some(HostNotificationProtocol::Off)
+        );
+    }
+
+    #[test]
+    fn a_host_notification_protocol_absent_from_the_command_line_keeps_the_configured_one() {
+        let config = Options {
+            host_notification_protocol: Some(HostNotificationProtocol::Osc99),
+            ..Default::default()
+        };
+        assert_eq!(
+            config
+                .merge_from_cli(Options::default())
+                .host_notification_protocol,
+            Some(HostNotificationProtocol::Osc99),
+            "the option is carried over verbatim, not toggled like the boolean options are"
         );
     }
 }

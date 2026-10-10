@@ -8,7 +8,7 @@ use crate::panes::kitty_graphics::{
 use crate::panes::sixel::SixelImageStore;
 use crate::panes::LinkHandler;
 use crate::panes::{
-    grid::{Grid, ProgramState},
+    grid::{Grid, PendingNotification, ProgramState},
     nested_session_modal::GuestModalShortcuts,
     terminal_character::{render_first_run_banner, TerminalCharacter, EMPTY_TERMINAL_CHARACTER},
 };
@@ -28,8 +28,8 @@ use zellij_utils::input::mouse::{MouseEvent, MouseEventType};
 use zellij_utils::pane_size::Offset;
 use zellij_utils::{
     data::{
-        BareKey, InputMode, KeyWithModifier, Palette, PaletteColor, PaneId as ZellijUtilsPaneId,
-        RegexHighlight, Style, Styling,
+        BareKey, BorderStyleOverride, InputMode, KeyWithModifier, Palette, PaletteColor,
+        PaneId as ZellijUtilsPaneId, RegexHighlight, Style, Styling,
     },
     errors::prelude::*,
     input::layout::Run,
@@ -152,6 +152,7 @@ pub struct TerminalPane {
     prev_pane_name: String,
     frame: HashMap<ClientId, PaneFrame>,
     borderless: bool,
+    border_style_override: BorderStyleOverride,
     exclude_from_sync: bool,
     fake_cursor_locations: HashSet<(usize, usize)>, // (x, y) - these hold a record of previous fake cursors which we need to clear on render
     search_term: String,
@@ -770,6 +771,34 @@ impl Pane for TerminalPane {
         self.grid.move_viewport_down(count);
         self.set_should_render(true);
     }
+    fn scroll_left(&mut self, _count: usize, _client_id: ClientId) {}
+    fn scroll_right(&mut self, _count: usize, _client_id: ClientId) {}
+    fn scroll_to_previous_prompt(&mut self, _client_id: ClientId) {
+        if self.grid.scroll_to_previous_prompt() {
+            self.set_should_render(true);
+        }
+    }
+    fn scroll_to_next_prompt(&mut self, _client_id: ClientId) {
+        if self.grid.scroll_to_next_prompt() {
+            self.set_should_render(true);
+        }
+    }
+    fn select_command_at_scroll_position(&mut self, _client_id: ClientId) {
+        if self.grid.select_command_at_scroll_position() {
+            self.set_should_render(true);
+        }
+    }
+    fn copy_last_command_output(&mut self) -> Option<String> {
+        let (output, start, end) = self.grid.last_completed_command_output()?;
+        self.grid.set_command_output_flash(start, end);
+        self.set_should_render(true);
+        Some(output)
+    }
+    fn clear_command_output_flash(&mut self) {
+        if self.grid.clear_command_output_flash() {
+            self.set_should_render(true);
+        }
+    }
     fn clear_scroll(&mut self) {
         self.grid.reset_viewport();
         self.set_should_render(true);
@@ -914,12 +943,17 @@ impl Pane for TerminalPane {
         self.grid.pending_clipboard_update.take()
     }
 
-    fn drain_desktop_notifications(&mut self) -> Vec<(String, String)> {
+    fn drain_desktop_notifications(&mut self) -> Vec<PendingNotification> {
         self.grid.pending_desktop_notifications.drain(..).collect()
     }
 
     fn drain_osc7_cwd(&mut self) -> Option<std::path::PathBuf> {
         self.grid.pending_osc7_cwd.take()
+    }
+
+    fn set_selection_options(&mut self, osc133_command_selection: bool, word_separators: &str) {
+        self.grid
+            .set_selection_options(osc133_command_selection, word_separators);
     }
 
     fn start_selection(&mut self, start: &Position, _client_id: ClientId) {
@@ -979,10 +1013,7 @@ impl Pane for TerminalPane {
         TerminalPane::toggle_copy_visual(self);
     }
 
-    fn handle_copy_mode_key_active(
-        &mut self,
-        key: CopyModeKey,
-    ) -> CopyModeActiveResult {
+    fn handle_copy_mode_key_active(&mut self, key: CopyModeKey) -> CopyModeActiveResult {
         TerminalPane::handle_copy_mode_key_active(self, key)
     }
 
@@ -1025,6 +1056,14 @@ impl Pane for TerminalPane {
             self.set_content_offset(Offset::frame(1));
         }
     }
+    fn set_border_style_override(&mut self, border_style_override: BorderStyleOverride) {
+        self.border_style_override = border_style_override;
+        self.frame.clear();
+        self.set_should_render(true);
+    }
+    fn border_style_override(&self) -> BorderStyleOverride {
+        self.border_style_override
+    }
 
     fn set_exclude_from_sync(&mut self, exclude_from_sync: bool) {
         self.exclude_from_sync = exclude_from_sync;
@@ -1061,6 +1100,12 @@ impl Pane for TerminalPane {
     }
     fn mouse_scroll_down(&self, position: &Position) -> Option<String> {
         self.grid.mouse_scroll_down_signal(position)
+    }
+    fn mouse_scroll_left(&self, position: &Position) -> Option<String> {
+        self.grid.mouse_scroll_left_signal(position)
+    }
+    fn mouse_scroll_right(&self, position: &Position) -> Option<String> {
+        self.grid.mouse_scroll_right_signal(position)
     }
     fn focus_event(&self) -> Option<String> {
         self.grid.focus_event()
@@ -1151,6 +1196,9 @@ impl Pane for TerminalPane {
     fn consume_bell(&mut self) {
         self.grid.ring_bell = false;
     }
+    fn osc7_payload(&self) -> Option<&str> {
+        self.grid.osc7_payload()
+    }
     fn set_bell_notification(&mut self, val: bool) {
         self.has_bell_notification = val;
     }
@@ -1179,6 +1227,9 @@ impl Pane for TerminalPane {
     }
     fn invoked_with(&self) -> &Option<Run> {
         &self.invoked_with
+    }
+    fn take_notification_end(&mut self) -> Option<NotificationEnd> {
+        self.notification_end.take()
     }
     fn set_title(&mut self, title: String) {
         self.pane_title = title;
@@ -1268,6 +1319,10 @@ impl Pane for TerminalPane {
         self.style.rounded_corners = rounded_corners;
         self.frame.clear();
     }
+    fn invalidate_frame_cache(&mut self) {
+        self.frame.clear();
+        self.set_should_render(true);
+    }
     fn drain_fake_cursors(&mut self) -> Option<HashSet<(usize, usize)>> {
         if !self.fake_cursor_locations.is_empty() {
             for (y, _x) in &self.fake_cursor_locations {
@@ -1296,6 +1351,15 @@ impl Pane for TerminalPane {
                     self.toggle_pinned();
                     return true;
                 }
+            }
+        }
+        false
+    }
+    fn position_is_on_pin_button(&self, position: &Position, client_id: ClientId) -> bool {
+        if self.position_is_on_frame(position) {
+            let relative_position = self.relative_position(position);
+            if let Some(client_frame) = self.frame.get(&client_id) {
+                return client_frame.clicked_on_pinned(relative_position);
             }
         }
         false
@@ -1477,6 +1541,7 @@ impl TerminalPane {
             pane_name: pane_name.clone(),
             prev_pane_name: pane_name,
             borderless: false,
+            border_style_override: BorderStyleOverride::default(),
             exclude_from_sync: false,
             fake_cursor_locations: HashSet::new(),
             search_term: String::new(),
@@ -1584,7 +1649,7 @@ impl TerminalPane {
     fn reflow_lines(&mut self) {
         let rows = self.get_content_rows();
         let cols = self.get_content_columns();
-        self.grid.force_change_size(rows, cols);
+        self.grid.change_size(rows, cols);
         if self.banner.is_some() {
             self.grid.reset_terminal_state();
             self.render_first_run_banner();

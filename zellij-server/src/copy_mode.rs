@@ -95,7 +95,9 @@ pub enum CopyModeActiveResult {
     /// Stay in copy mode; selection already synced (or no visual change).
     Continue,
     /// Exit copy mode (caller clears selection). Optionally yank after.
-    Exit { yank: bool },
+    Exit {
+        yank: bool,
+    },
     /// Scroll the viewport one line, then re-sync (free-cursor edge only).
     ScrollUp,
     ScrollDown,
@@ -299,26 +301,10 @@ fn prev_word_start(grid: &Grid, cur: Position) -> Option<Position> {
     clamp_cell(cells[i], rows, cols)
 }
 
-#[derive(Debug, Default, Clone, Copy)]
-pub struct ScrollPosition {
-    // Kept for per-pane bookkeeping / future use. Bottom-exit now uses the
-    // pane's real `is_scrolled` flag rather than an armed counter.
-}
-
 pub fn is_scroll_group(mode: zellij_utils::data::InputMode) -> bool {
     matches!(
         mode,
         zellij_utils::data::InputMode::Scroll
-            | zellij_utils::data::InputMode::Search
-            | zellij_utils::data::InputMode::EnterSearch
-    )
-}
-
-pub fn is_steady(mode: zellij_utils::data::InputMode) -> bool {
-    matches!(
-        mode,
-        zellij_utils::data::InputMode::Normal
-            | zellij_utils::data::InputMode::Scroll
             | zellij_utils::data::InputMode::Search
             | zellij_utils::data::InputMode::EnterSearch
     )
@@ -363,11 +349,6 @@ mod tests {
         let (start, end) = session.selection_start_end();
         assert_eq!(start, Position::new(0, 0));
         assert_eq!(end, Position::new(0, 1));
-    }
-
-    #[test]
-    fn scroll_position_default() {
-        let _pos = ScrollPosition::default();
     }
 
     #[test]

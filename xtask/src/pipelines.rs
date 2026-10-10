@@ -102,7 +102,8 @@ pub fn install(sh: &Shell, flags: flags::Install) -> anyhow::Result<()> {
             .join(&flags.destination)
     };
     sh.change_dir(crate::project_root());
-    sh.copy_file(binary, &destination).with_context(err_context)?;
+    sh.copy_file(binary, &destination)
+        .with_context(err_context)?;
 
     if cfg!(target_os = "macos") {
         cmd!(sh, "codesign --force --sign -")
