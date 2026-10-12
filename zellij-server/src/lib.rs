@@ -18,6 +18,7 @@ mod logging_pipe;
 mod mobile_web;
 pub mod nested_guest;
 pub mod notifications;
+pub(crate) mod sound;
 mod pane_groups;
 mod plugins;
 mod pty;
@@ -1271,6 +1272,14 @@ impl SessionMetaData {
                         .options
                         .nested_session_handling
                         .unwrap_or_default(),
+                    agent_completion_sound: new_config
+                        .options
+                        .agent_completion_sound
+                        .unwrap_or(true),
+                    agent_completion_sound_path: new_config
+                        .options
+                        .agent_completion_sound_path
+                        .clone(),
                 })
                 .unwrap();
             if base_mode_changed {

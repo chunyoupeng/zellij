@@ -2186,6 +2186,10 @@ pub struct Options {
     pub context_menu_enabled: ::core::option::Option<bool>,
     #[prost(bool, optional, tag="76")]
     pub dangerously_allow_web_serving_without_a_certificate: ::core::option::Option<bool>,
+    #[prost(bool, optional, tag="77")]
+    pub agent_completion_sound: ::core::option::Option<bool>,
+    #[prost(string, optional, tag="78")]
+    pub agent_completion_sound_path: ::core::option::Option<::prost::alloc::string::String>,
 }
 /// Pane-targeting action messages
 #[allow(clippy::derive_partial_eq_without_eq)]

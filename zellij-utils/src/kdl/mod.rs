@@ -3298,6 +3298,36 @@ impl Options {
             "dangerously_enable_paste_buffer_read"
         )
         .map(|(v, _)| v);
+        let agent_completion_sound = {
+            let primary = kdl_property_first_arg_as_bool_or_error!(
+                kdl_options,
+                "agent_completion_sound"
+            );
+            if primary.is_some() {
+                primary.map(|(v, _)| v)
+            } else {
+                kdl_property_first_arg_as_bool_or_error!(
+                    kdl_options,
+                    "agent_sound"
+                )
+                .map(|(v, _)| v)
+            }
+        };
+        let agent_completion_sound_path = {
+            let primary = kdl_property_first_arg_as_string_or_error!(
+                kdl_options,
+                "agent_completion_sound_path"
+            );
+            if primary.is_some() {
+                primary.map(|(v, _)| PathBuf::from(v))
+            } else {
+                kdl_property_first_arg_as_string_or_error!(
+                    kdl_options,
+                    "agent_sound_path"
+                )
+                .map(|(v, _)| PathBuf::from(v))
+            }
+        };
 
         Ok(Options {
             simplified_ui,
@@ -3368,6 +3398,8 @@ impl Options {
             client_async_worker_tasks,
             nested_session_handling,
             dangerously_enable_paste_buffer_read,
+            agent_completion_sound,
+            agent_completion_sound_path,
         })
     }
     pub fn from_string(stringified_keybindings: &String) -> Result<Self, ConfigError> {
@@ -5202,6 +5234,26 @@ impl Options {
             None
         }
     }
+    fn agent_completion_sound_to_kdl(&self) -> Option<KdlNode> {
+        if let Some(agent_completion_sound) = self.agent_completion_sound {
+            let mut node = KdlNode::new("agent_completion_sound");
+            node.push(KdlValue::Bool(agent_completion_sound));
+            Some(node)
+        } else {
+            None
+        }
+    }
+    fn agent_completion_sound_path_to_kdl(&self) -> Option<KdlNode> {
+        if let Some(agent_completion_sound_path) = &self.agent_completion_sound_path {
+            let mut node = KdlNode::new("agent_completion_sound_path");
+            node.push(KdlValue::String(
+                agent_completion_sound_path.to_string_lossy().to_string(),
+            ));
+            Some(node)
+        } else {
+            None
+        }
+    }
     pub fn to_kdl(&self, add_comments: bool) -> Vec<KdlNode> {
         let mut nodes = vec![];
         if let Some(simplified_ui_node) = self.simplified_ui_to_kdl(add_comments) {
@@ -5412,6 +5464,12 @@ impl Options {
             self.host_notification_protocol_to_kdl(add_comments)
         {
             nodes.push(host_notification_protocol);
+        }
+        if let Some(agent_completion_sound) = self.agent_completion_sound_to_kdl() {
+            nodes.push(agent_completion_sound);
+        }
+        if let Some(agent_completion_sound_path) = self.agent_completion_sound_path_to_kdl() {
+            nodes.push(agent_completion_sound_path);
         }
         nodes
     }
@@ -10443,4 +10501,32 @@ fn run_with_background_parses_and_is_written_back() {
     let written = action.to_kdl().unwrap();
     let reparsed = Action::try_from((&written, &Options::default())).unwrap();
     assert_eq!(reparsed, expected);
+}
+
+#[test]
+fn agent_completion_sound_kdl_round_trip() {
+    let text = r#"
+        agent_completion_sound false
+        agent_completion_sound_path "/custom/sound.wav"
+    "#;
+    let document: KdlDocument = text.parse().unwrap();
+    let options = Options::from_kdl(&document).unwrap();
+    assert_eq!(options.agent_completion_sound, Some(false));
+    assert_eq!(
+        options.agent_completion_sound_path,
+        Some(PathBuf::from("/custom/sound.wav"))
+    );
+
+    // Also test aliases
+    let alias_text = r#"
+        agent_sound true
+        agent_sound_path "/alias/sound.aiff"
+    "#;
+    let alias_doc: KdlDocument = alias_text.parse().unwrap();
+    let alias_options = Options::from_kdl(&alias_doc).unwrap();
+    assert_eq!(alias_options.agent_completion_sound, Some(true));
+    assert_eq!(
+        alias_options.agent_completion_sound_path,
+        Some(PathBuf::from("/alias/sound.aiff"))
+    );
 }

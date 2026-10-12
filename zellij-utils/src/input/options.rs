@@ -483,6 +483,17 @@ pub struct Options {
     #[clap(long, value_parser)]
     #[serde(default)]
     pub dangerously_enable_paste_buffer_read: Option<bool>,
+
+    /// Whether to play a sound when an agent (or program status) completes or fails
+    /// default is true
+    #[clap(long, value_parser)]
+    #[serde(default, alias = "agent_sound", alias = "agent_status_sound")]
+    pub agent_completion_sound: Option<bool>,
+
+    /// Path to a custom sound file to play when an agent completes or fails
+    #[clap(long, value_parser)]
+    #[serde(default, alias = "agent_sound_path", alias = "agent_status_sound_path")]
+    pub agent_completion_sound_path: Option<PathBuf>,
 }
 
 #[derive(ValueEnum, Deserialize, Serialize, Debug, Clone, Copy, PartialEq)]
@@ -680,6 +691,11 @@ impl Options {
         let dangerously_enable_paste_buffer_read = other
             .dangerously_enable_paste_buffer_read
             .or(self.dangerously_enable_paste_buffer_read);
+        let agent_completion_sound = other.agent_completion_sound.or(self.agent_completion_sound);
+        let agent_completion_sound_path = other
+            .agent_completion_sound_path
+            .clone()
+            .or_else(|| self.agent_completion_sound_path.clone());
 
         Options {
             simplified_ui,
@@ -750,6 +766,8 @@ impl Options {
             client_async_worker_tasks,
             nested_session_handling,
             dangerously_enable_paste_buffer_read,
+            agent_completion_sound,
+            agent_completion_sound_path,
         }
     }
 
@@ -881,6 +899,11 @@ impl Options {
         let dangerously_enable_paste_buffer_read = other
             .dangerously_enable_paste_buffer_read
             .or(self.dangerously_enable_paste_buffer_read);
+        let agent_completion_sound = other.agent_completion_sound.or(self.agent_completion_sound);
+        let agent_completion_sound_path = other
+            .agent_completion_sound_path
+            .clone()
+            .or_else(|| self.agent_completion_sound_path.clone());
 
         Options {
             simplified_ui,
@@ -951,6 +974,8 @@ impl Options {
             client_async_worker_tasks,
             nested_session_handling,
             dangerously_enable_paste_buffer_read,
+            agent_completion_sound,
+            agent_completion_sound_path,
         }
     }
 

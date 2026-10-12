@@ -1034,6 +1034,11 @@ impl From<crate::input::options::Options>
                     crate::data::ThemeHue::Light => ProtoThemeHue::Light as i32,
                 }
             }),
+            agent_completion_sound: options.agent_completion_sound,
+            agent_completion_sound_path: options
+                .agent_completion_sound_path
+                .as_ref()
+                .map(|p| p.to_string_lossy().to_string()),
         }
     }
 }
@@ -1191,6 +1196,10 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Options>
                     }
                 })
                 .transpose()?,
+            agent_completion_sound: options.agent_completion_sound,
+            agent_completion_sound_path: options
+                .agent_completion_sound_path
+                .map(std::path::PathBuf::from),
         })
     }
 }

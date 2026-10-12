@@ -881,6 +881,8 @@ pub enum ScreenInstruction {
         host_notification_protocol: HostNotificationProtocol,
         nested_session_handling: NestedSessionHandling,
         dangerously_enable_paste_buffer_read: bool,
+        agent_completion_sound: bool,
+        agent_completion_sound_path: Option<PathBuf>,
     },
     RerunCommandPane(u32, Option<NotificationEnd>), // u32 - terminal pane id
     ResizePaneWithId(ResizeStrategy, PaneId),
@@ -1790,6 +1792,8 @@ pub(crate) struct Screen {
     focus_follows_mouse: bool,
     mouse_click_through: bool,
     context_menu_enabled: bool,
+    agent_completion_sound: bool,
+    agent_completion_sound_path: Option<PathBuf>,
     currently_marking_pane_group: Rc<RefCell<HashMap<ClientId, bool>>>,
     // the below are the configured values - the ones that will be set if and when the web server
     // is brought online
@@ -1959,6 +1963,8 @@ impl Screen {
         nested_session_handling: NestedSessionHandling,
         ime_switch_command: Option<String>,
         ime_english: Option<String>,
+        agent_completion_sound: bool,
+        agent_completion_sound_path: Option<PathBuf>,
     ) -> Self {
         let session_name = mode_info.session_name.clone().unwrap_or_default();
         let session_info = SessionInfo::new(session_name.clone());
@@ -2042,6 +2048,8 @@ impl Screen {
             focus_follows_mouse,
             mouse_click_through,
             context_menu_enabled: true,
+            agent_completion_sound,
+            agent_completion_sound_path,
             web_server_ip,
             web_server_port,
             render_blocker: RenderBlocker::new(100),
@@ -4971,6 +4979,18 @@ impl Screen {
                         has_bell = true;
                     }
                 }
+            }
+
+            let mut has_agent_completion = false;
+            for tab in self.tabs.values_mut() {
+                if tab.check_and_consume_agent_completions() {
+                    has_agent_completion = true;
+                }
+            }
+            if has_agent_completion && self.agent_completion_sound {
+                let _ = self.bus.senders.send_to_background_jobs(
+                    BackgroundJob::PlayAgentCompletionSound(self.agent_completion_sound_path.clone()),
+                );
             }
 
             if has_bell {
@@ -9734,6 +9754,8 @@ pub(crate) fn screen_thread_main(
         nested_session_handling,
         config_options.ime_switch_command.clone(),
         config_options.ime_english.clone(),
+        config_options.agent_completion_sound.unwrap_or(true),
+        config_options.agent_completion_sound_path.clone(),
     );
     screen.default_keybinds = default_keybinds;
     screen.default_context_menu_config = config.context_menu.clone();
@@ -13442,7 +13464,11 @@ pub(crate) fn screen_thread_main(
                 host_notification_protocol,
                 nested_session_handling,
                 dangerously_enable_paste_buffer_read,
+                agent_completion_sound,
+                agent_completion_sound_path,
             } => {
+                screen.agent_completion_sound = agent_completion_sound;
+                screen.agent_completion_sound_path = agent_completion_sound_path;
                 screen.update_context_menu_enabled(context_menu_enabled);
                 screen.host_theme_dark_styling = host_theme_dark;
                 screen.host_theme_light_styling = host_theme_light;

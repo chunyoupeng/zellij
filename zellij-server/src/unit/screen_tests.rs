@@ -401,6 +401,8 @@ fn create_new_screen_with_capture(
         NestedSessionHandling::default(),
         None,
         None,
+        true, // agent_completion_sound
+        None, // agent_completion_sound_path
     );
     (
         seed_first_client_size(screen, size),
@@ -5974,6 +5976,8 @@ fn create_new_screen_with_message_capture(
         NestedSessionHandling::default(),
         None,
         None,
+        true, // agent_completion_sound
+        None, // agent_completion_sound_path
     );
     (seed_first_client_size(screen, size), messages)
 }
@@ -9217,6 +9221,8 @@ fn create_new_screen_with_forward_capture(size: Size) -> (Screen, ForwardCapture
         NestedSessionHandling::default(),
         None,
         None,
+        true, // agent_completion_sound
+        None, // agent_completion_sound_path
     );
     (
         seed_first_client_size(screen, size),
@@ -10119,6 +10125,8 @@ fn create_new_screen_with_theme_capture(size: Size) -> (Screen, ThemeCapture) {
         NestedSessionHandling::default(),
         None,
         None,
+        true,
+        None,
     );
     (
         seed_first_client_size(screen, size),
@@ -10945,6 +10953,8 @@ fn create_non_mirrored_screen(size: Size) -> Screen {
         NestedSessionHandling::default(),
         None,
         None,
+        true, // agent_completion_sound
+        None, // agent_completion_sound_path
     );
     seed_first_client_size(screen, size)
 }

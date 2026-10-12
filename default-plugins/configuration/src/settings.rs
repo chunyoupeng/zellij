@@ -222,6 +222,24 @@ pub fn describe(key: SettingKey) -> SettingInfo {
             "true",
             Everyone,
         ),
+        SettingKey::AgentCompletionSound => info(
+            "Agent completion sound",
+            Appearance,
+            "Play a sound when an agent completes or fails",
+            Toggle,
+            "true",
+            Everyone,
+        ),
+        SettingKey::AgentCompletionSoundPath => info(
+            "Agent completion sound path",
+            Appearance,
+            "Path to a custom sound file to play on completion",
+            TextFile {
+                can_be_unset: true,
+            },
+            "default",
+            Everyone,
+        ),
         SettingKey::StyledUnderlines => info(
             "Styled underlines",
             Appearance,
@@ -936,7 +954,7 @@ pub fn section(key: SettingKey) -> &'static str {
         ThemeDir | LayoutDir | KeybindsDir => "Folders",
         DefaultLayout | DefaultCwd => "Starting points",
         DefaultShell | ScrollbackEditor => "Programs",
-        SimplifiedUi | PaneFrames | PaneFrameStyle | VisualBell => "Display",
+        SimplifiedUi | PaneFrames | PaneFrameStyle | VisualBell | AgentCompletionSound | AgentCompletionSoundPath => "Display",
         StyledUnderlines | Osc8Hyperlinks => "Text",
         FrameRoundedCorners | FrameHideSessionName => "Frames",
         FrameBorderStyle

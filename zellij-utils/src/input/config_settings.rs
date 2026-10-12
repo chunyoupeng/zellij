@@ -170,6 +170,8 @@ fn option_values(options: &Options, values: &mut BTreeMap<SettingKey, Option<Str
         client_async_worker_tasks,
         nested_session_handling,
         dangerously_enable_paste_buffer_read,
+        agent_completion_sound,
+        agent_completion_sound_path,
     } = options;
     let entries = [
         (SettingKey::SimplifiedUi, display_text(simplified_ui)),
@@ -327,6 +329,14 @@ fn option_values(options: &Options, values: &mut BTreeMap<SettingKey, Option<Str
         (
             SettingKey::DangerouslyEnablePasteBufferRead,
             display_text(dangerously_enable_paste_buffer_read),
+        ),
+        (
+            SettingKey::AgentCompletionSound,
+            display_text(agent_completion_sound),
+        ),
+        (
+            SettingKey::AgentCompletionSoundPath,
+            path_text(agent_completion_sound_path),
         ),
     ];
     values.extend(entries);
@@ -652,6 +662,12 @@ pub fn copy_setting(target: &mut Config, source: &Config, key: SettingKey) {
         },
         SettingKey::DangerouslyEnablePasteBufferRead => {
             options.dangerously_enable_paste_buffer_read = from.dangerously_enable_paste_buffer_read
+        },
+        SettingKey::AgentCompletionSound => {
+            options.agent_completion_sound = from.agent_completion_sound
+        },
+        SettingKey::AgentCompletionSoundPath => {
+            options.agent_completion_sound_path = from.agent_completion_sound_path.clone()
         },
         SettingKey::FrameRoundedCorners => frames.rounded_corners = from_frames.rounded_corners,
         SettingKey::FrameHideSessionName => {

@@ -531,6 +531,8 @@ fn test_client_messages() {
                 host_notification_protocol: Some(HostNotificationProtocol::Osc99),
                 nested_session_handling: Some(NestedSessionHandling::Fullscreen),
                 dangerously_enable_paste_buffer_read: Some(true),
+                agent_completion_sound: Some(true),
+                agent_completion_sound_path: Some(PathBuf::from("/path/to/sound.wav")),
             }),
             layout: None,
             terminal_window_size: Size { rows: 80, cols: 42 },

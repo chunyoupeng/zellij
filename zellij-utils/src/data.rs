@@ -4875,6 +4875,8 @@ setting_keys! {
     ClientAsyncWorkerTasks => (TopLevel, "client_async_worker_tasks", true, Number),
     NestedSessionHandling => (TopLevel, "nested_session_handling", false, Text),
     DangerouslyEnablePasteBufferRead => (TopLevel, "dangerously_enable_paste_buffer_read", false, Flag),
+    AgentCompletionSound => (TopLevel, "agent_completion_sound", false, Flag),
+    AgentCompletionSoundPath => (TopLevel, "agent_completion_sound_path", false, Text),
     FrameRoundedCorners => (PaneFrames, "rounded_corners", false, Flag),
     FrameHideSessionName => (PaneFrames, "hide_session_name", false, Flag),
     FrameBorderStyle => (PaneFrames, "border_style", false, Text),

@@ -187,6 +187,8 @@ pub struct TerminalPane {
     /// The AI agent currently running in this pane's foreground (if any) and
     /// its activity, displayed as a badge in the pane frame.
     agent_status: Option<AgentStatus>,
+    previous_agent_activity: Option<AgentActivity>,
+    has_agent_completion: bool,
 }
 
 impl Pane for TerminalPane {
@@ -251,6 +253,7 @@ impl Pane for TerminalPane {
         });
         if new_status != self.agent_status {
             self.agent_status = new_status;
+            self.check_agent_activity_transition();
             self.set_should_render(true);
             true
         } else {
@@ -330,6 +333,7 @@ impl Pane for TerminalPane {
         if consumed < forwarded.len() {
             self.pending_pty_input.extend(&forwarded[consumed..]);
         }
+        self.check_agent_activity_transition();
     }
     fn cursor_coordinates(&self, client_id: Option<ClientId>) -> Option<(usize, usize, bool)> {
         // (x, y, is_visible)
@@ -1166,6 +1170,11 @@ impl Pane for TerminalPane {
     fn consume_bell(&mut self) {
         self.grid.ring_bell = false;
     }
+    fn check_and_consume_agent_completion(&mut self) -> bool {
+        let val = self.has_agent_completion;
+        self.has_agent_completion = false;
+        val
+    }
     fn osc7_payload(&self) -> Option<&str> {
         self.grid.osc7_payload()
     }
@@ -1445,6 +1454,25 @@ impl TerminalPane {
         }
     }
 
+    pub(crate) fn check_agent_activity_transition(&mut self) {
+        let current_activity = self.effective_agent_status().map(|s| s.activity);
+        if let Some(current) = current_activity {
+            let triggered = match (self.previous_agent_activity, current) {
+                // Program explicitly reported Done or Error (e.g. via OSC 7501)
+                (prev, AgentActivity::Done) if prev != Some(AgentActivity::Done) => true,
+                (prev, AgentActivity::Error) if prev != Some(AgentActivity::Error) => true,
+                // Heuristic agent detection: transitioned from Working to Idle
+                (Some(AgentActivity::Working), AgentActivity::Idle)
+                    if self.grid.program_status.is_none() => true,
+                _ => false,
+            };
+            if triggered {
+                self.has_agent_completion = true;
+            }
+        }
+        self.previous_agent_activity = current_activity;
+    }
+
     fn title_with_bell_indicator(&self, title: String) -> String {
         if self.has_bell_notification {
             format!("{} [!]", title)
@@ -1532,6 +1560,8 @@ impl TerminalPane {
             kitty_interceptor: KittyApcInterceptor::new(),
             last_output_at: Instant::now(),
             agent_status: None,
+            previous_agent_activity: None,
+            has_agent_completion: false,
         }
     }
 

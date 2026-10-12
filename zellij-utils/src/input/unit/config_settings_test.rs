@@ -83,6 +83,8 @@ fn every_option_set() -> Options {
         client_async_worker_tasks: Some(8),
         nested_session_handling: Some(NestedSessionHandling::Never),
         dangerously_enable_paste_buffer_read: Some(true),
+        agent_completion_sound: Some(false),
+        agent_completion_sound_path: Some(PathBuf::from("/tmp/sound.wav")),
     }
 }
 

@@ -86,6 +86,7 @@ pub enum BackgroundJob {
     StartNestedGuestPing(PaneId),
     StopNestedGuestPing(PaneId),
     TrimAllocator,
+    PlayAgentCompletionSound(Option<PathBuf>),
     Exit,
 }
 
@@ -121,6 +122,9 @@ impl From<&BackgroundJob> for BackgroundJobContext {
             BackgroundJob::StartNestedGuestPing(..) => BackgroundJobContext::StartNestedGuestPing,
             BackgroundJob::StopNestedGuestPing(..) => BackgroundJobContext::StopNestedGuestPing,
             BackgroundJob::TrimAllocator => BackgroundJobContext::TrimAllocator,
+            BackgroundJob::PlayAgentCompletionSound(..) => {
+                BackgroundJobContext::PlayAgentCompletionSound
+            },
             BackgroundJob::Exit => BackgroundJobContext::Exit,
         }
     }
@@ -785,6 +789,9 @@ pub(crate) fn background_jobs_main(
                         }
                     });
                 }
+            },
+            BackgroundJob::PlayAgentCompletionSound(custom_path) => {
+                crate::sound::play_completion_sound(custom_path.as_deref());
             },
             BackgroundJob::Exit => {
                 for loading_plugin in loading_plugins.values() {

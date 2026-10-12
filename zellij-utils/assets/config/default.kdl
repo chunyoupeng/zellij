@@ -543,6 +543,15 @@ context_menu {
 //
 // visual_bell false
 
+// Whether to play a sound when an agent (or program status) completes or fails
+// Default: true
+//
+// agent_completion_sound false
+
+// Path to a custom sound file to play when an agent completes or fails
+//
+// agent_completion_sound_path "/path/to/sound.wav"
+
 // Whether hovering the mouse over a pane focuses it
 // Default: false
 //

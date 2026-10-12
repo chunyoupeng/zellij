@@ -723,6 +723,7 @@ pub enum BackgroundJobContext {
     StartNestedGuestPing,
     StopNestedGuestPing,
     TrimAllocator,
+    PlayAgentCompletionSound,
     Exit,
 }
 

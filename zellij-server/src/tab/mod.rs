@@ -798,6 +798,9 @@ pub trait Pane {
         false
     }
     fn consume_bell(&mut self) {}
+    fn check_and_consume_agent_completion(&mut self) -> bool {
+        false
+    }
     fn osc7_payload(&self) -> Option<&str> {
         None
     }
@@ -4329,6 +4332,24 @@ impl Tab {
             }
         }
         had_bell
+    }
+    pub fn check_and_consume_agent_completions(&mut self) -> bool {
+        let pane_ids: Vec<PaneId> = self
+            .tiled_panes
+            .get_panes()
+            .chain(self.floating_panes.get_panes())
+            .chain(self.suppressed_stack_list_members())
+            .map(|(pane_id, _)| *pane_id)
+            .collect();
+        let mut had_completion = false;
+        for pane_id in pane_ids {
+            if let Some(pane) = self.get_pane_with_id_mut(pane_id) {
+                if pane.check_and_consume_agent_completion() {
+                    had_completion = true;
+                }
+            }
+        }
+        had_completion
     }
     pub fn has_terminal_pid(&self, pid: u32) -> bool {
         self.tiled_panes.panes_contain(&PaneId::Terminal(pid))

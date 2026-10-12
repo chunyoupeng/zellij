@@ -14,6 +14,11 @@ use zellij_utils::{
 };
 
 use std::fmt::Write;
+use std::time::Instant;
+
+fn create_test_terminal_pane() -> TerminalPane {
+    create_guest_modal_pane()
+}
 
 fn read_fixture(fixture_name: &str) -> Vec<u8> {
     let mut path_to_file = std::path::PathBuf::new();
@@ -1302,4 +1307,61 @@ pub fn terminal_pane_effective_agent_status_and_osc7501() {
             activity: AgentActivity::Idle,
         })
     );
+}
+
+#[test]
+pub fn agent_completion_sound_trigger_osc7501() {
+    let mut pane = create_test_terminal_pane();
+
+    // 1. Initial state has no completion
+    assert!(!pane.check_and_consume_agent_completion());
+
+    // 2. Transition to working -> no sound
+    pane.handle_pty_bytes(b"\x1b]7501;state=working:app=pi\x1b\\".to_vec());
+    assert!(!pane.check_and_consume_agent_completion());
+
+    // 3. Transition from working to done -> triggers sound
+    pane.handle_pty_bytes(b"\x1b]7501;state=done:app=pi\x1b\\".to_vec());
+    assert!(pane.check_and_consume_agent_completion());
+    // Once consumed, it is reset
+    assert!(!pane.check_and_consume_agent_completion());
+
+    // 4. Repeated done -> does not trigger again
+    pane.handle_pty_bytes(b"\x1b]7501;state=done:app=pi\x1b\\".to_vec());
+    assert!(!pane.check_and_consume_agent_completion());
+
+    // 5. Working -> error -> triggers sound
+    pane.handle_pty_bytes(b"\x1b]7501;state=working:app=pi\x1b\\".to_vec());
+    assert!(!pane.check_and_consume_agent_completion());
+    pane.handle_pty_bytes(b"\x1b]7501;state=error:app=pi\x1b\\".to_vec());
+    assert!(pane.check_and_consume_agent_completion());
+    assert!(!pane.check_and_consume_agent_completion());
+
+    // 6. Idle -> done -> triggers sound
+    pane.handle_pty_bytes(b"\x1b]7501;state=idle:app=pi\x1b\\".to_vec());
+    assert!(!pane.check_and_consume_agent_completion());
+    pane.handle_pty_bytes(b"\x1b]7501;state=done:app=pi\x1b\\".to_vec());
+    assert!(pane.check_and_consume_agent_completion());
+}
+
+#[test]
+pub fn agent_completion_sound_trigger_heuristic() {
+    let mut pane = create_test_terminal_pane();
+
+    // 1. Initially no completion
+    assert!(!pane.check_and_consume_agent_completion());
+
+    // 2. Agent detected and starts working
+    pane.update_agent_status(Some("claude"));
+    assert!(!pane.check_and_consume_agent_completion());
+
+    // 3. Agent finishes and becomes idle -> triggers sound
+    pane.last_output_at = Instant::now() - std::time::Duration::from_secs(5);
+    pane.update_agent_status(Some("claude"));
+    assert!(pane.check_and_consume_agent_completion());
+    assert!(!pane.check_and_consume_agent_completion());
+
+    // 4. Staying idle does not trigger again
+    pane.update_agent_status(Some("claude"));
+    assert!(!pane.check_and_consume_agent_completion());
 }
