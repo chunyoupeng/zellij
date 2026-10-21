@@ -32,7 +32,7 @@ use zellij_utils::position::Position;
 use zellij_utils::position::{Column, Line};
 use zellij_utils::shared::clean_string_from_control_and_linebreak;
 
-use crate::agent_detection::AgentStatus;
+use crate::agent_detection::{AgentActivity, AgentStatus};
 use crate::background_jobs::BackgroundJob;
 use crate::pane_groups::PaneGroups;
 use crate::pty_writer::PtyWriteInstruction;
@@ -4358,6 +4358,50 @@ impl Tab {
                 .suppressed_panes
                 .values()
                 .any(|s_p| s_p.1.pid() == PaneId::Terminal(pid))
+    }
+    /// A one-glyph summary of the AI agents running in this tab's panes (all
+    /// of them, including floating and stack-collapsed panes), shown next to
+    /// the tab name so that the work happening in other tabs stays visible.
+    /// `show_completions` controls whether a finished or failed agent is still
+    /// worth signalling - it is not once the user is looking at this tab.
+    pub fn agent_indicator(&self, show_completions: bool) -> Option<String> {
+        let mut working = 0;
+        let mut blocked = 0;
+        let mut errored = 0;
+        let mut done = 0;
+        let mut count_activity =
+            |pane: &dyn Pane| match pane.effective_agent_status().map(|status| status.activity) {
+                Some(AgentActivity::Working) => working += 1,
+                Some(AgentActivity::Blocked) => blocked += 1,
+                Some(AgentActivity::Error) => errored += 1,
+                Some(AgentActivity::Done) => done += 1,
+                _ => {},
+            };
+        for (_pane_id, pane) in self.get_tiled_panes() {
+            count_activity(pane.as_ref());
+        }
+        for (_pane_id, pane) in self.get_floating_panes() {
+            count_activity(pane.as_ref());
+        }
+        for (_pane_id, (_is_scrollback_editor, pane)) in self.get_suppressed_panes() {
+            count_activity(pane.as_ref());
+        }
+        let (symbol, count) = if blocked > 0 {
+            ("!", blocked)
+        } else if show_completions && errored > 0 {
+            ("✗", errored)
+        } else if working > 0 {
+            ("●", working)
+        } else if show_completions && done > 0 {
+            ("✓", done)
+        } else {
+            return None;
+        };
+        if count > 1 {
+            Some(format!("{}{}", symbol, count))
+        } else {
+            Some(symbol.to_owned())
+        }
     }
     /// Updates the AI-agent status badge of this tab's terminal panes from a
     /// map of terminal_id -> foreground agent name, returning whether any

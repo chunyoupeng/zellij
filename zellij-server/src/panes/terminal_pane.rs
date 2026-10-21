@@ -187,6 +187,10 @@ pub struct TerminalPane {
     /// The AI agent currently running in this pane's foreground (if any) and
     /// its activity, displayed as a badge in the pane frame.
     agent_status: Option<AgentStatus>,
+    /// The status the screen was last told about, so that a state reported by
+    /// the program itself (OSC 7501) also counts as a change even though it
+    /// reaches the grid between two pty scans.
+    reported_agent_status: Option<AgentStatus>,
     previous_agent_activity: Option<AgentActivity>,
     has_agent_completion: bool,
 }
@@ -251,8 +255,10 @@ impl Pane for TerminalPane {
                 activity,
             }
         });
-        if new_status != self.agent_status {
-            self.agent_status = new_status;
+        self.agent_status = new_status;
+        let current_status = self.effective_agent_status();
+        if current_status != self.reported_agent_status {
+            self.reported_agent_status = current_status;
             self.check_agent_activity_transition();
             self.set_should_render(true);
             true
@@ -1560,6 +1566,7 @@ impl TerminalPane {
             kitty_interceptor: KittyApcInterceptor::new(),
             last_output_at: Instant::now(),
             agent_status: None,
+            reported_agent_status: None,
             previous_agent_activity: None,
             has_agent_completion: false,
         }

@@ -6119,11 +6119,16 @@ impl Screen {
                 let tab_display_area = tab.get_display_area();
                 let selectable_tiled_panes_count = tab.get_selectable_tiled_panes_count();
                 let selectable_floating_panes_count = tab.get_selectable_floating_panes_count();
+                let mut tab_name_for_plugins = tab
+                    .single_pane_tab_name()
+                    .unwrap_or_else(|| tab.name.clone());
+                if let Some(agent_indicator) = tab.agent_indicator(*active_tab_index != tab.id) {
+                    tab_name_for_plugins.push(' ');
+                    tab_name_for_plugins.push_str(&agent_indicator);
+                }
                 let tab_info_for_plugins = TabInfo {
                     position: tab.position,
-                    name: tab
-                        .single_pane_tab_name()
-                        .unwrap_or_else(|| tab.name.clone()),
+                    name: tab_name_for_plugins,
                     active: *active_tab_index == tab.id,
                     panes_to_hide: tab.panes_to_hide_count(),
                     is_fullscreen_active: tab.is_fullscreen_active(),
@@ -9847,6 +9852,9 @@ pub(crate) fn screen_thread_main(
                         .bus
                         .senders
                         .send_to_background_jobs(BackgroundJob::RenderToClients);
+                    // the tab bar carries a per-tab agent indicator, so the plugins need a fresh
+                    // TabUpdate whenever a pane's agent status moved
+                    screen.generate_and_report_tab_state().non_fatal();
                 }
             },
             ScreenInstruction::PluginBytes(mut plugin_render_assets) => {

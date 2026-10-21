@@ -21152,3 +21152,71 @@ fn pane_info_reports_whether_a_pane_is_collapsed() {
 
     assert!(!is_collapsed(&tab, 2));
 }
+
+fn report_program_state(tab: &mut Tab, terminal_id: u32, state: &str) {
+    let sequence = format!("\u{1b}]7501;state={}:app=pi\u{1b}\\", state);
+    tab.handle_pty_bytes(terminal_id, sequence.into_bytes())
+        .unwrap();
+}
+
+#[test]
+fn agent_indicator_without_agents_is_empty() {
+    let tab = tab_with_a_pane_above_a_pane();
+    assert_eq!(tab.agent_indicator(true), None);
+    assert_eq!(tab.agent_indicator(false), None);
+}
+
+#[test]
+fn agent_indicator_counts_panes_in_every_part_of_the_tab() {
+    let mut tab = tab_with_a_pane_above_a_pane();
+    report_program_state(&mut tab, 1, "working");
+    assert_eq!(tab.agent_indicator(true), Some("●".to_owned()));
+    // the second pane is stacked on the first, its status must still count
+    report_program_state(&mut tab, 2, "working");
+    assert_eq!(tab.agent_indicator(true), Some("●2".to_owned()));
+}
+
+#[test]
+fn agent_indicator_prefers_states_that_need_attention() {
+    let mut tab = tab_with_a_pane_above_a_pane();
+    report_program_state(&mut tab, 1, "working");
+    report_program_state(&mut tab, 2, "blocked");
+    assert_eq!(
+        tab.agent_indicator(true),
+        Some("!".to_owned()),
+        "a blocked agent outranks a working one"
+    );
+    report_program_state(&mut tab, 2, "error");
+    report_program_state(&mut tab, 1, "working");
+    assert_eq!(tab.agent_indicator(true), Some("✗".to_owned()));
+}
+
+#[test]
+fn agent_indicator_hides_finished_and_failed_agents_once_looked_at() {
+    let mut tab = tab_with_a_pane_above_a_pane();
+    report_program_state(&mut tab, 1, "done");
+    assert_eq!(tab.agent_indicator(true), Some("✓".to_owned()));
+    assert_eq!(
+        tab.agent_indicator(false),
+        None,
+        "a finished agent is not worth a badge in the tab the user is looking at"
+    );
+    report_program_state(&mut tab, 2, "done");
+    assert_eq!(tab.agent_indicator(true), Some("✓2".to_owned()));
+    report_program_state(&mut tab, 2, "working");
+    assert_eq!(
+        tab.agent_indicator(true),
+        Some("●".to_owned()),
+        "a running agent outranks finished ones"
+    );
+}
+
+#[test]
+fn agent_indicator_shows_heuristically_detected_agents() {
+    let mut tab = tab_with_a_pane_above_a_pane();
+    tab.handle_pty_bytes(1, b"thinking...".to_vec()).unwrap();
+    let mut agents = HashMap::new();
+    agents.insert(1, Some("pi".to_string()));
+    tab.update_agent_statuses(&agents);
+    assert_eq!(tab.agent_indicator(true), Some("●".to_owned()));
+}
