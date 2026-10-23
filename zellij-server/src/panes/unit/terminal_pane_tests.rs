@@ -1365,3 +1365,27 @@ pub fn agent_completion_sound_trigger_heuristic() {
     pane.update_agent_status(Some("claude"));
     assert!(!pane.check_and_consume_agent_completion());
 }
+
+#[test]
+pub fn agent_mode_sequence_heartbeat_does_not_keep_working() {
+    use crate::agent_detection::AgentActivity;
+    let mut pane = create_test_terminal_pane();
+    pane.update_agent_status(Some("agy"));
+    pane.last_output_at = Instant::now() - std::time::Duration::from_secs(5);
+
+    // agy re-sends these mode sequences every ~2s while idle
+    pane.handle_pty_bytes(b"\x1b[?2004h\x1b[>4;2m".to_vec());
+    pane.update_agent_status(Some("agy"));
+    assert_eq!(
+        pane.effective_agent_status().map(|s| s.activity),
+        Some(AgentActivity::Idle)
+    );
+    assert!(pane.check_and_consume_agent_completion());
+
+    pane.handle_pty_bytes(b"\x1b[2K\rThinking".to_vec());
+    pane.update_agent_status(Some("agy"));
+    assert_eq!(
+        pane.effective_agent_status().map(|s| s.activity),
+        Some(AgentActivity::Working)
+    );
+}

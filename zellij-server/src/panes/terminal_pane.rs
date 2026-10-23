@@ -1,5 +1,6 @@
 use crate::agent_detection::{
-    text_indicates_blocked, AgentActivity, AgentStatus, AGENT_WORKING_THRESHOLD,
+    bytes_have_visible_output, text_indicates_blocked, AgentActivity, AgentStatus,
+    AGENT_WORKING_THRESHOLD,
 };
 use crate::output::{CharacterChunk, KittyImageChunk, SixelImageChunk};
 use crate::panes::kitty_graphics::{
@@ -268,7 +269,9 @@ impl Pane for TerminalPane {
     }
     fn handle_pty_bytes(&mut self, bytes: VteBytes) {
         self.set_should_render(true);
-        self.last_output_at = Instant::now();
+        if bytes_have_visible_output(&bytes) {
+            self.last_output_at = Instant::now();
+        }
         if self.forward_paused {
             // A host-forward initiated by this pane is outstanding.
             // Buffer the bytes; Tab drains them on resume.

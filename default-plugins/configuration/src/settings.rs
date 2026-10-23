@@ -234,9 +234,7 @@ pub fn describe(key: SettingKey) -> SettingInfo {
             "Agent completion sound path",
             Appearance,
             "Path to a custom sound file to play on completion",
-            TextFile {
-                can_be_unset: true,
-            },
+            Text(TextCheck::Path),
             "default",
             Everyone,
         ),

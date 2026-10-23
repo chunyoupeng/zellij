@@ -138,6 +138,53 @@ pub fn agent_name_from_cmd(cmd: &[String]) -> Option<String> {
     None
 }
 
+/// Whether a chunk of pty output contains anything besides escape sequences
+/// and C0 controls. Some agents (eg. `agy`) re-send terminal mode sequences
+/// every couple of seconds while idle; that must not count as activity.
+pub fn bytes_have_visible_output(bytes: &[u8]) -> bool {
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            0x1b => {
+                i += 1;
+                match bytes.get(i) {
+                    // CSI: parameters and intermediates up to a final byte
+                    Some(b'[') => {
+                        i += 1;
+                        while i < bytes.len() && !(0x40..=0x7e).contains(&bytes[i]) {
+                            i += 1;
+                        }
+                    },
+                    // OSC, DCS, SOS, PM, APC: string terminated by BEL or ST
+                    Some(b']' | b'P' | b'X' | b'^' | b'_') => {
+                        i += 1;
+                        while i < bytes.len() {
+                            if bytes[i] == 0x07 {
+                                break;
+                            }
+                            if bytes[i] == 0x1b && bytes.get(i + 1) == Some(&b'\\') {
+                                i += 1;
+                                break;
+                            }
+                            i += 1;
+                        }
+                    },
+                    // eg. `ESC ( B`: intermediates followed by a final byte
+                    _ => {
+                        while i < bytes.len() && (0x20..=0x2f).contains(&bytes[i]) {
+                            i += 1;
+                        }
+                    },
+                }
+            },
+            0x00..=0x1f | 0x7f => {},
+            _ => return true,
+        }
+        i += 1;
+    }
+    false
+}
+
 /// Phrases that indicate a pending confirmation dialog on the agent's screen.
 /// Only consulted when the agent has stopped producing output, so moderately
 /// generic phrasing is acceptable.
@@ -246,6 +293,18 @@ mod tests {
             None
         );
         assert_eq!(agent_name_from_cmd(&cmd(&[])), None);
+    }
+
+    #[test]
+    fn mode_sequences_are_not_visible_output() {
+        assert!(!bytes_have_visible_output(b"\x1b[?2004h\x1b[>4;2m"));
+        assert!(!bytes_have_visible_output(b"\x1b[?25l\r\n\x1b(B\x1b=\x07"));
+        assert!(!bytes_have_visible_output(
+            b"\x1b]0;title\x07\x1b]11;?\x1b\\"
+        ));
+        assert!(!bytes_have_visible_output(b""));
+        assert!(bytes_have_visible_output(b"\x1b[2K\r\xe2\xa3\xb7 Thinking"));
+        assert!(bytes_have_visible_output(b"\x1b]0;title\x07x"));
     }
 
     #[test]
